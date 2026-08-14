@@ -1,0 +1,31 @@
+# Copy this file to config.yaml and fill in paths for your machine.
+# config.yaml is gitignored — it holds machine-specific absolute paths only.
+
+paths:
+  # Root directory for all pipeline inputs/outputs.
+  data_root: /media/storage0/yuya/NFIP
+
+  # Census Bureau cartographic boundary shapefiles (block groups + ZCTAs),
+  shapefile_root: /media/storage0/yuya/Shapefiles
+
+  # National Structure Inventory, public release (USACE), as GeoPackages.
+  nsi_public_root: /media/storage0/yuya/NFIP/NSI_2022_Public
+
+block_group_shapefiles:
+  1970: { glob: "gz_2010_*_150_00_500k.zip" }
+  1980: { glob: "gz_2010_*_150_00_500k.zip" }
+  1990: { glob: "gz_2010_*_150_00_500k.zip" }
+  2000: { glob: "gz_2010_*_150_00_500k.zip" }
+  2010: { glob: "gz_2010_*_150_00_500k.zip" }
+  2020: { glob: "cb_2020_*_bg_500k.zip" }
+
+zcta_shapefiles:
+  2000: { glob: "zt*_d00_shp.zip", field: "ZCTA" }
+  2010: { file: "cb_2019_us_zcta510_500k.zip", field: "ZCTA5CE10" }
+  2020: { file: "cb_2020_us_zcta520_500k.zip", field: "ZCTA5CE20" }
+
+# Pluvial (causeOfDamage == "4") date-correction settings.
+pluvial_correction:
+  search_window_days: 7        # +/- days searched around the reported date
+  min_hourly_precip_mm: 5.0    # threshold used to accept the reported date as-is
+  aorc_coverage_start: "1979-01-01"   # AORC v1.1 CONUS coverage begins 1979-01-01
