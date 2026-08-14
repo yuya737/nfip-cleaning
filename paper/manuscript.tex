@@ -1,0 +1,420 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{authblk}
+\usepackage{hyperref}
+\usepackage{parskip}
+
+\title{A Triangulated, Date-Corrected Dataset of U.S. National Flood
+Insurance Program Claims}
+
+\author[1,*]{Yuya Kawakami}
+% Additional author(s) -- TBD. Confirm whether Tom Corringham (basis for
+% the inflation-adjustment approach in adjust_inflation.py) should be
+% listed as a co-author here or credited in Acknowledgements instead.
+
+\affil[1]{[Department], University of California, Davis, Davis, CA, USA}
+\affil[*]{Corresponding author: yuya737@gmail.com}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section*{Abstract}
+% Draft -- 150-200 words, no citations, no subheadings, per Scientific
+% Data style. Revise once Data Overview numbers below are filled in.
+
+The National Flood Insurance Program (NFIP) Redacted Claims dataset is a
+primary public record of flood losses in the United States, but two
+properties of the raw extract limit its direct use in spatial and
+temporal analysis. First, reported locations are deliberately coarsened
+for policyholder privacy, leaving each claim with three independent,
+imprecise location signals (a census block group, a ZIP code, and a
+latitude/longitude rounded to one decimal place) rather than a single
+precise point. Second, a subset of claims attributed to rain-driven
+(pluvial) flooding carry a reported date of loss that does not coincide
+with any local precipitation event, suggesting reporting or processing
+error. We present a cleaning pipeline and derived dataset that (1)
+adjusts all monetary fields to constant-year dollars, (2) triangulates a
+bounded spatial-uncertainty polygon per claim from the three location
+signals using an empirically validated, decade-based Census boundary
+assignment, and (3) corrects likely-erroneous dates for pluvial claims
+against NOAA's Analysis of Record for Calibration (AORC) precipitation
+reanalysis, at each claim's own local time. The pipeline is fully
+scripted and reproducible from public sources, and its methodological
+choices are validated empirically against the claims data itself rather
+than assumed.
+
+\section*{Background \& Summary}
+% Draft. Expand with citations to prior NFIP-claims literature and
+% flood-risk studies that motivate this work -- none included yet.
+
+The NFIP, administered by FEMA, is the principal source of insured flood
+loss data in the United States and is widely used in flood-risk,
+climate-adaptation, and disaster-economics research. FEMA releases a
+redacted extract of individual claims records (OpenFEMA's ``FIMA NFIP
+Redacted Claims v2'') that is public, free of authentication, and
+regularly updated, but it is a \emph{redacted} extract: several
+properties of the raw records make it unsuitable for direct use in
+location- or date-sensitive analysis without additional processing.
+
+Location is redacted to protect policyholder privacy. No street address
+is provided. Instead, each record carries a census block group FIPS
+code, a ZIP code, and a latitude/longitude pair rounded to one decimal
+place --- three coarse, independently imprecise proxies for the claim's
+true location, none of which alone bounds that location tightly. A
+na\"ive analysis using any single one of these fields either over- or
+under-states the spatial precision actually available.
+
+Reported dates of loss are also imperfect for a subset of claims. Claims
+attributed to pluvial (rain-driven) flooding are recorded in NFIP using
+\texttt{causeOfDamage == "4"} (``Other''), a broad catch-all rather than
+a clean pluvial label, and the reported \texttt{dateOfLoss} for such
+claims does not always coincide with a day of meaningful precipitation
+at the claim's location --- consistent with reporting delay, adjuster
+processing lag, or transcription error rather than the actual date of
+the flood event.
+
+This paper documents an open, reproducible pipeline that addresses both
+problems using only public data: FEMA's own claims extract, the Federal
+Reserve Economic Data (FRED) personal consumption expenditures price
+index, U.S. Census Bureau cartographic boundary files, and NOAA's AORC
+v1.1 precipitation reanalysis. Every non-trivial methodological choice
+in the pipeline --- which Census boundary vintage to assign to a claim,
+whether time zone and daylight-saving effects matter for date
+correction, what AORC grid resolution is actually available --- was
+tested empirically against the claims data and the source archives
+themselves rather than assumed, and the resulting evidence is reported
+alongside the choice it justifies (see Methods and Technical
+Validation). The output is a claim-level dataset carrying an added
+spatial-uncertainty polygon and, where applicable, a corrected date of
+loss, released under an open license alongside the pipeline code that
+produced it.
+
+\section*{Methods}
+
+This pipeline processes FEMA's public claims extract in three stages,
+run in order: inflation adjustment, spatial triangulation, and pluvial
+date correction. Each stage is implemented as an independent,
+re-runnable script; the full sequence is in \texttt{src/run\_pipeline.sh}
+of the code repository (see Code Availability).
+
+\subsection*{Input data}
+
+\begin{itemize}
+  \item \textbf{FEMA OpenFEMA} --- FIMA NFIP Redacted Claims v2
+    (\texttt{FimaNfipClaims.parquet}). Public bulk download, no
+    authentication. US government work, public domain.
+  \item \textbf{FRED} (Federal Reserve Bank of St. Louis) --- Personal
+    consumption expenditures price index, series
+    \texttt{DPCERD3Q086SBEA}. Public CSV endpoint, no authentication.
+  \item \textbf{U.S. Census Bureau} --- Cartographic boundary
+    shapefiles: block groups and ZIP Code Tabulation Areas (ZCTAs),
+    assigned per claim decade rather than one file per claim year (see
+    below). Public bulk download, public domain.
+  \item \textbf{NOAA} --- Analysis of Record for Calibration (AORC)
+    v1.1, 30 arc-second ($\sim$800 m) grid, hourly. Public,
+    \texttt{s3://noaa-nws-aorc-v1-1-1km}, no-sign-request.
+\end{itemize}
+
+None of these sources are redistributed in raw form in the code
+repository; each pipeline step downloads or expects a locally staged
+copy of its input, documented at the point of use.
+
+\textbf{Scope.} This dataset covers the 48 contiguous U.S. states and
+the District of Columbia (CONUS). NFIP claims also exist for Alaska,
+Hawaii, Puerto Rico, and other territories, which are excluded by
+design --- Census cartographic boundary conventions and AORC's grid
+extent both treat CONUS as a distinct product from these territories ---
+rather than dropped as an incidental side effect of processing.
+
+\subsection*{Stage 1: Inflation adjustment}
+
+Every dollar-denominated claim field (paid amounts, coverage limits,
+building/contents value, replacement cost) is rescaled to a fixed target
+year's dollars using the FRED PCE price index, matched to each claim's
+loss quarter. The default target year is 2021 and is configurable.
+
+\subsection*{Stage 2: Spatial triangulation}
+
+Each claim ships with three independent, imprecise location signals: a
+census block group FIPS code, a ZIP code, and a rounded
+latitude/longitude. Triangulation intersects whichever of these are
+available into a single polygon per claim, placing a strict upper bound
+on the claim's true location that is typically substantially smaller
+than any one source's region alone.
+
+\textbf{Boundary vintage assignment.} Census block-group and ZCTA
+boundaries are redrawn each decennial cycle, so the default assumption
+would be to match each claim to the boundary vintage in effect at its
+loss year. Testing against the claims data does not support that
+assumption: matching \texttt{censusBlockGroupFips} against the official
+2010 decennial block-group release yields a 92--100\% match rate for
+claims in every decade back to the 1970s, including years before block
+groups existed as a nationwide census geography. This indicates FEMA's
+geocoding assigns a recent-vintage boundary to each record at processing
+time rather than using the historical loss-year boundary, and there is
+no sharp cutover to the newer (2020) vintage: 77.7\% of block-group
+GEOIDs are identical between the 2010 and 2020 releases, and the match
+rate against 2020 increases gradually with loss year rather than
+switching at a specific point.
+
+A per-claim membership test against every available shapefile release
+would recover more matches than any decade-based rule (measured at
+approximately 88,000 additional CONUS claims, 3.4\%, that match only the
+release a decade-based table does not assign to their era), since the
+transition between releases is gradual. This pipeline instead uses an
+explicit per-decade shapefile mapping: each claim's decade
+(\texttt{yearOfLoss // 10 * 10}) is looked up in a configuration table
+that maps directly to one shapefile, with no fallback to another release
+on a miss. This is a deliberate precision/auditability tradeoff,
+favoring a rule that can be stated and audited in a few lines over a
+data-driven per-claim selection with no documented counterpart in FEMA's
+own process. Most decades are assigned the official 2010 Census release,
+with only the 2020s decade assigned to the 2020 release. Together these
+leave 1,017 CONUS claims (0.04\%) matching neither release, a residual
+accepted without further investigation.
+
+Block-group and ZIP lookups use the same decade key but independent
+configuration tables, so they need not resolve to the same underlying
+release for a given claim. ZCTAs exist only from the 2000 census onward
+(verified against Census's \texttt{PREVGENZ} archive, which contains no
+pre-2000 ZIP-tabulation product), so pre-2000 claims skip the ZIP source
+entirely and fall back to block group and lat/lon only. ZCTA-release
+choice was found to have little effect on match rate (a strict
+per-decade rule loses only about 1,900 claims relative to testing all
+three available ZCTA releases), unlike the block-group case, but each
+decade from 2000 onward is still assigned its own contemporaneous ZCTA
+release for methodological consistency.
+
+Once a decade's shapefile is selected, the match is validated against
+FEMA's rounded lat/lon rather than accepted on GEOID string match alone:
+a code that matches the decade's shapefile GEOID but whose polygon does
+not overlap the $0.1 \times 0.1$ degree box implied by the rounded
+coordinates is treated as spatially inconsistent and excluded from the
+claim's intersection. A claim's location sources can also each
+individually validate against the lat/lon box while failing to overlap
+one another; this is flagged explicitly rather than allowing a zero-area
+polygon to be published silently.
+
+\subsection*{Stage 3: Pluvial date correction}
+
+For each claim coded \texttt{causeOfDamage == "4"}, the reported
+\texttt{dateOfLoss} is checked against whether it coincides with a day
+of meaningful precipitation (maximum hourly precipitation exceeding a
+configurable threshold, default 5.0 mm) at the claim's triangulated
+location, using AORC v1.1. If it does not, a window of nearby days
+(default $\pm$7) is searched for the wettest day, and if that day
+clears the threshold it is treated as the corrected date. The original
+\texttt{dateOfLoss} is never overwritten; the corrected value and an
+explicit status code are added as new columns, letting downstream users
+decide whether to apply the correction.
+
+Day boundaries are evaluated in each claim's own local time zone ---
+resolved geographically per claim location --- rather than a single
+national reference clock, and daylight-saving transitions are handled
+correctly (a local day spans 23 or 25 hours, not always 24, across a
+spring-forward or fall-back date) rather than assuming a fixed UTC
+offset. Precipitation at each claim's exact location is computed by
+bilinear interpolation of the four surrounding AORC grid pixels, rather
+than nearest-pixel lookup, before the daily maximum is taken.
+
+AORC coverage for CONUS begins 1979-01-01. Pluvial claims before this
+date, and claims located outside the AORC CONUS grid extent, are not
+evaluated and retain their reported date. Rather than downloading AORC's
+full hourly CONUS archive, the pipeline computes the substantially
+smaller set of distinct (pixel, day) pairs actually referenced by any
+pluvial claim's search window, and fetches only those values from the
+public archive.
+
+\section*{Data Records}
+% Filenames/paths below reflect the current pipeline output location;
+% update if final published data records are deposited under different
+% names -- see Data Availability.
+
+The dataset is released as a single columnar file
+(\texttt{claims\_pluvial\_corrected.parquet}, Apache Parquet format) at
+claim-level granularity. All original columns from the FEMA OpenFEMA
+\texttt{FimaNfipClaims} extract are preserved unchanged (see FEMA's own
+data dictionary for those). The columns added by this pipeline are:
+
+\textbf{Added by inflation adjustment.} \texttt{\{field\}Real2021} for
+each of 15 dollar-denominated fields (paid amounts, coverage limits,
+building/contents value, replacement cost), rescaled to 2021 dollars;
+\texttt{amountPaid} / \texttt{amountPaidReal2021} (sum of the three
+\texttt{amountPaidOn*Claim} fields); \texttt{damageAmount} /
+\texttt{damageAmountReal2021} (\texttt{buildingDamageAmount +
+contentsDamageAmount}).
+
+\textbf{Added by triangulation.} \texttt{geometry} (polygon, EPSG:5070
+Albers Equal Area), the intersection of whichever of \{block-group
+boundary, ZCTA boundary, lat/lon box\} were available and spatially
+validated for the claim; \texttt{n\_geometry\_sources} (0--3) and
+\texttt{geometry\_sources} (e.g. \texttt{"block\_group+zip+latlon"})
+recording which sources contributed; \texttt{geometry\_is\_empty},
+flagging claims whose sources each individually validated but do not
+overlap one another; \texttt{decade\_used}, the claim's decade bucket
+and lookup key into the boundary-vintage configuration (see Methods);
+\texttt{block\_group\_match\_status} and \texttt{zip\_match\_status},
+each one of \texttt{not\_found}, \texttt{validated},
+\texttt{unvalidated\_no\_latlon}, \texttt{spatially\_inconsistent}, or
+\texttt{no\_shapefile\_for\_decade}.
+
+\textbf{Added by pluvial date correction.}
+\texttt{correctedDateOfLoss}, the reported date if it already coincided
+with meaningful precipitation, the corrected date if a correction was
+made, or the original date otherwise (always populated);
+\texttt{pluvialCorrectionStatus}, one of \texttt{not\_pluvial},
+\texttt{before\_aorc\_coverage}, \texttt{outside\_aorc\_grid\_extent},
+\texttt{accepted\_as\_reported}, \texttt{corrected},
+\texttt{no\_qualifying\_precip\_in\_window}, or
+\texttt{no\_aorc\_data\_in\_window};
+\texttt{pluvialCorrectionMaxPrecipMm}, the maximum daily precipitation
+(mm) found at the claim's location on the date
+\texttt{correctedDateOfLoss} refers to.
+
+\texttt{geometry} uses EPSG:5070 (meters); the original FEMA
+\texttt{latitude} / \texttt{longitude} fields remain in WGS84
+(EPSG:4326) degrees, unchanged.
+
+\section*{Data Overview}
+% TBD -- populate once a full pipeline run against the current codebase
+% (per-decade shapefile configuration and bilinear AORC interpolation)
+% has been completed and verified. Include: total claim count in the
+% final dataset; count and share of claims by n_geometry_sources; count
+% and share of pluvial claims by pluvialCorrectionStatus, in particular
+% the share actually corrected; temporal coverage (min/max yearOfLoss)
+% and its distribution; and a map or summary of claim counts by state.
+
+[TBD]
+
+\section*{Technical Validation}
+
+Each non-default methodological choice in this pipeline was validated
+against either the claims data itself or the source archives directly,
+rather than assumed from documentation alone.
+
+\textbf{Boundary vintage assignment (Stage 2).} The decade-based
+assignment rule was chosen by directly measuring match rates of
+\texttt{censusBlockGroupFips} against the 2010 and 2020 official
+block-group releases, by decade of \texttt{yearOfLoss}, across the full
+claims extract. This measurement is what established both that a
+2010-vintage release matches 92--100\% of claims in every decade back to
+the 1970s (evidence that FEMA's geocoding is not
+historical-vintage-aware) and that the 2010-versus-2020 transition is
+gradual (77.7\% of GEOIDs identical between releases) rather than sharp
+--- the empirical basis for the per-decade rule described in Methods,
+including its measured 88,000-claim (3.4\%) cost relative to a per-claim
+membership test. The pre-2000 ZCTA gap was verified directly against
+Census's \texttt{PREVGENZ} archive (no pre-2000 ZIP-tabulation product
+exists) rather than assumed from general knowledge of Census geography
+changes; ZCTA-vintage sensitivity was measured directly (approximately
+1,900 claims) rather than assumed negligible.
+
+\textbf{AORC grid resolution (Stage 3).} AORC's public S3 bucket is
+named \texttt{noaa-nws-aorc-v1-1-1km}, suggesting a 1 km grid. The
+actual grid spacing was verified directly against the archive's
+coordinate metadata: a 30 arc-second (1/120 degree) step, corresponding
+to approximately 926 m north-south and 610--840 m east-west across
+CONUS latitudes (varying with latitude because a degree of longitude
+spans less ground distance at higher latitudes), not 1 km. This grid
+resolution is stated correctly in Methods rather than inherited from the
+bucket name.
+
+\textbf{Time zone and daylight-saving handling (Stage 3).} Local-day
+boundaries for AORC lookups are resolved through a two-step process: a
+geographic time-zone lookup at each claim's location
+(\texttt{timezonefinder}) followed by daylight-saving-aware UTC
+conversion for the specific calendar date in question (Python's
+\texttt{zoneinfo}), rather than a fixed UTC offset per location. This
+was confirmed by direct code inspection to correctly produce 23- or
+25-hour local days across spring-forward and fall-back transitions, and
+to correctly attribute a December 31 local day's final hours to UTC's
+following calendar year rather than dropping them.
+
+\section*{Usage Notes}
+
+\texttt{geometry} is a strict upper bound on a claim's true location,
+not the location itself --- it is the intersection of multiple
+imprecise sources, and its area varies claim to claim depending on how
+many sources were available and how tightly they constrain each other
+(\texttt{n\_geometry\_sources}, \texttt{geometry\_sources}). Users
+requiring a fixed minimum precision should filter on these columns.
+
+\texttt{correctedDateOfLoss} is a suggested correction, not a
+replacement for \texttt{dateOfLoss}: both are retained, and
+\texttt{pluvialCorrectionStatus} records why a claim was or was not
+corrected, so that users can choose their own threshold for accepting
+the correction or fall back to the original reported date.
+
+This dataset is CONUS-only; NFIP claims for Alaska, Hawaii, Puerto Rico,
+and other territories are not included (see Methods, Scope).
+
+\texttt{causeOfDamage == "4"} is used as the best available proxy for
+pluvial claims but is a coarse label (see Methods, Stage 3); results
+that depend on precisely isolating pluvial-caused losses should treat
+\texttt{pluvialCorrectionStatus == "not\_pluvial"} accordingly rather
+than as a guarantee of non-pluvial cause.
+
+An optional structure-refinement stage against FEMA's National Structure
+Inventory (\texttt{refine\_with\_nsi.py}) exists in the code repository
+but is not part of the pipeline run that produces the released dataset.
+
+\section*{Data Availability}
+% TBD -- fill in the permanent archive/DOI once the derived dataset is
+% deposited, per Scientific Data's requirement that data be hosted in a
+% recognized public repository, not solely on GitHub.
+
+The derived dataset described in this paper is released under a CC-BY
+4.0 license. [Repository name/DOI TBD.] The three upstream sources it is
+built from are also public: FEMA's OpenFEMA FIMA NFIP Redacted Claims v2
+(\url{https://www.fema.gov/openfema-data-page/fima-nfip-redacted-claims-v2}),
+U.S. Census Bureau cartographic boundary files
+(\url{https://www.census.gov/geographies/mapping-files/time-series/geo/carto-boundary-file.html}),
+and NOAA's AORC v1.1 (public S3, \texttt{s3://noaa-nws-aorc-v1-1-1km},
+no-sign-request). None require redistribution restrictions beyond those
+already stated.
+
+\section*{Code Availability}
+% TBD -- fill in the public code repository URL once available.
+
+The pipeline code that produces this dataset from the public sources
+listed above is released under the MIT License at [repository URL TBD].
+The repository includes a full methods write-up
+(\texttt{docs/methods.md}) and data dictionary
+(\texttt{docs/data\_dictionary.md}) documenting every column this
+pipeline adds, and a single entry-point script
+(\texttt{src/run\_pipeline.sh}) that reproduces the released dataset end
+to end from public sources with no manual steps beyond supplying local
+paths for downloaded Census shapefiles.
+
+\section*{References}
+% TBD -- add citations for: prior NFIP-claims research this work builds
+% on or is intended to support; FEMA OpenFEMA data documentation; FRED
+% PCE series documentation; Census cartographic boundary file
+% documentation; NOAA AORC v1.1 technical documentation; timezonefinder
+% if a citable reference exists.
+
+\section*{Author Contributions}
+% TBD -- confirm final author list before completing this section using
+% CRediT roles.
+
+Y.K.: conceptualization, methodology, software, validation, writing ---
+original draft. [Additional authors: TBD.]
+
+\section*{Competing Interests}
+
+The authors declare no competing interests. [Confirm before submission.]
+
+\section*{Acknowledgements}
+% TBD. If Tom Corringham is not listed as a co-author, acknowledge here
+% the notebook this pipeline's inflation-adjustment approach is adapted
+% from.
+
+\section*{Funding}
+% TBD -- list any grant/award numbers and funding bodies supporting this
+% work, or state that none was received.
+
+\end{document}
