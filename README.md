@@ -70,17 +70,10 @@ this repository — they're large, versioned by their own sources, and
 get them instead. What *is* bundled/released is the derived output in
 `data/processed/`.
 
-## Status
+## License
 
-This repository is being prepared alongside a Scientific Data submission
-and is not yet finalized. Open items:
-
-- **License** — not yet chosen for either the code or the derived
-  dataset (Scientific Data typically expects an open license, e.g.
-  CC-BY 4.0 for the data).
-- **Authorship / CITATION.cff** — draft only; author list and
-  affiliations need confirming (the inflation-adjustment step in
-  `adjust_inflation.py` is adapted from a notebook authored by
-  Tom Corringham).
-- **Final bundling** — which columns/years ship in `data/processed/`
-  by default is still being decided.
+The pipeline code in `src/` is released under the MIT License (`LICENSE`).
+The derived dataset (`data/processed/`, once populated) is released
+separately under CC-BY 4.0, matching Scientific Data's expectations for
+openly licensed data. None of the upstream sources (FEMA, Census, NOAA)
+require anything more restrictive than that.
