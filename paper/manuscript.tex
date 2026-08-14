@@ -21,8 +21,6 @@ Insurance Program Claims}
 \maketitle
 
 \section*{Abstract}
-% Draft -- 150-200 words, no citations, no subheadings, per Scientific
-% Data style. Revise once Data Overview numbers below are filled in.
 
 The National Flood Insurance Program (NFIP) Redacted Claims dataset is
 the main public record of flood losses in the United States, but the
@@ -44,8 +42,6 @@ every major design choice is checked against the data rather than
 assumed.
 
 \section*{Background \& Summary}
-% Draft. Expand with citations to prior NFIP-claims literature and
-% flood-risk studies that motivate this work -- none included yet.
 
 The NFIP, administered by FEMA, is the main source of insured flood loss data in
 the United States and is widely used in flood-risk, climate, and
@@ -221,9 +217,6 @@ pluvial claim's search window, and fetches only those values from the
 public archive.
 
 \section*{Data Records}
-% Filenames/paths below reflect the current pipeline output location.
-% Update if final published data records are deposited under different
-% names. See Data Availability.
 
 The dataset is released as a single columnar file
 (\texttt{claims\_pluvial\_corrected.parquet}, Apache Parquet format) at
@@ -282,15 +275,8 @@ data dictionary for those). The columns added by this pipeline are:
 (EPSG:4326) degrees, unchanged.
 
 \section*{Data Overview}
-% TBD -- populate once a full pipeline run against the current codebase
-% (per-decade shapefile configuration and bilinear AORC interpolation)
-% has been completed and verified. Include: total claim count in the
-% final dataset, count and share of claims by n_geometry_sources, count
-% and share of pluvial claims by pluvialCorrectionStatus (in particular
-% the share actually corrected), temporal coverage (min/max yearOfLoss)
-% and its distribution, and a map or summary of claim counts by state.
 
-[TBD]
+TBD
 
 \section*{Technical Validation}
 
@@ -310,9 +296,6 @@ Instead of assuming should probably make it a parameter in the dataset construct
 
 
 \section*{Data Availability}
-% TBD -- fill in the permanent archive/DOI once the derived dataset is
-% deposited, per Scientific Data's requirement that data be hosted in a
-% recognized public repository, not solely on GitHub.
 
 The derived dataset described in this paper is released under a CC-BY
 4.0 license. The three upstream sources it is
@@ -325,32 +308,18 @@ no-sign-request). None require redistribution restrictions beyond those
 already stated.
 
 \section*{Code Availability}
-% TBD -- fill in the public code repository URL once available.
 Repo Location TBD
 
 
 
 \section*{References}
-% TBD -- add citations for: prior NFIP-claims research this work builds
-% on or is intended to support, FEMA OpenFEMA data documentation, FRED
-% PCE series documentation, Census cartographic boundary file
-% documentation, NOAA AORC v1.1 technical documentation, and
-% timezonefinder if a citable reference exists.
 
 \section*{Author Contributions}
-% TBD -- confirm final author list before completing this section using
-% CRediT roles.
 
 \section*{Competing Interests}
 
 
 \section*{Acknowledgements}
-% TBD. If Tom Corringham is not listed as a co-author, acknowledge here
-% the notebook this pipeline's inflation-adjustment approach is adapted
-% from.
-
 \section*{Funding}
-% TBD -- list any grant/award numbers and funding bodies supporting this
-% work, or state that none was received.
 
 \end{document}
