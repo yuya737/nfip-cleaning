@@ -1,15 +1,41 @@
+\begin{filecontents*}{manuscript.bib}
+@misc{fema_nfip_claims_v2,
+  author       = {{Federal Emergency Management Agency}},
+  title        = {{OpenFEMA Dataset: FIMA NFIP Redacted Claims - v2}},
+  year         = {2026},
+  howpublished = {\url{https://www.fema.gov/openfema-data-page/fima-nfip-redacted-claims-v2}},
+}
+@article{fall_analysis_2023,
+author = {Fall, Greg and Kitzmiller, David and Pavlovic, Sandra and Zhang, Ziya and Patrick, Nathan and St. Laurent, Michael and Trypaluk, Carl and Wu, Wanru and Miller, Dennis},
+title = {The Office of Water Prediction's Analysis of Record for Calibration, version 1.1: Dataset description and precipitation evaluation},
+journal = {JAWRA Journal of the American Water Resources Association},
+volume = {59},
+number = {6},
+pages = {1246-1272},
+keywords = {hydrology, meteorology, modeling, calibration, model forcing, precipitation, observations, geospatial analysis, geostatistics, time-series analysis, quality assurance/quality control (QAQC)},
+doi = {https://doi.org/10.1111/1752-1688.13143},
+url = {https://onlinelibrary.wiley.com/doi/abs/10.1111/1752-1688.13143},
+eprint = {https://onlinelibrary.wiley.com/doi/pdf/10.1111/1752-1688.13143},
+abstract = {Abstract Hydrologic models operated by the National Weather Service call for an accurate, consistent, high-resolution, multi-decade, continental-scale record of hydrometeorological fields to serve as forcing data for model calibration. To serve this purpose, the Analysis of Record for Calibration was developed, and version 1.1 of the dataset is described in this study. Geospatial and scientific requirements, methods used in dataset generation, and input data sources are described. Given the prominent role of precipitation in model calibration, accurate and consistent precipitation is a particularly high priority for the analysis. To evaluate the analysis from this perspective, its daily precipitation is compared with surface observing stations over 43 years. The analysis exhibits low bias compared with other similar products. It also displays nonstationary bias behavior after 2015 due to the lack of a climatological constraint, as well as frequent occurrences of heavy-to-extreme precipitation that are often difficult to verify. These findings should be taken into account when the product is used for model calibration.},
+year = {2023}
+}
+
+\end{filecontents*}
+
 \documentclass[11pt]{article}
 
 \usepackage[margin=1in]{geometry}
 \usepackage{authblk}
 \usepackage{hyperref}
 \usepackage{parskip}
+\usepackage[numbers,sort&compress]{natbib}
 
 \title{A Location-Refined, Date-Corrected Dataset of CONUS Pluvial National Flood
 Insurance Program Claims}
 
 \author[1]{Yuya Kawakami}
 \author[2]{Tom Corringham}
+
 
 \affil[1]{Department of Computer Science, University of California, Davis, Davis, CA, USA}
 \affil[2]{Scripps Institution of Oceanography, University of California, San Diego, La Jolla, CA, USA}
@@ -38,15 +64,14 @@ against the data itself, and (3) corrects likely-wrong dates for
 pluvial claims by checking each claim's local rainfall record against
 NOAA's Analysis of Record for Calibration (AORC) precipitation data.
 The whole pipeline is scripted, reproducible from public sources, and
-every major design choice is checked against the data rather than
-assumed.
+refinement choices are configurable via flags.
 
 \section*{Background \& Summary}
 
 The NFIP, administered by FEMA, is the main source of insured flood loss data in
 the United States and is widely used in flood-risk, climate, and
 disaster-economics research. FEMA publishes a redacted extract of
-individual claims (OpenFEMA's ``FIMA NFIP Redacted Claims v2''), which
+individual claims (OpenFEMA's ``FIMA NFIP Redacted Claims v2'')~\cite{fema_nfip_claims_v2}, which
 is public, free, and regularly updated. But because it is redacted,
 several properties of the raw records make it unfit for
 location- or date-sensitive analysis without extra processing.
@@ -70,7 +95,7 @@ This paper describes an open, reproducible pipeline that fixes both
 problems using only public data: FEMA's own claims extract, the Federal
 Reserve Economic Data (FRED) personal consumption expenditures price
 index, U.S. Census Bureau cartographic boundary files, and NOAA's AORC
-v1.1 precipitation reanalysis. Every major choice in the pipeline, including which Census boundary
+v1.1 precipitation reanalysis~\cite{fall_analysis_2023}. Every major choice in the pipeline, including which Census boundary
 vintage to use for a claim, whether time zone and daylight saving
 affect date correction, and what AORC's grid resolution actually is,
 was tested against the claims data and the source archives themselves
@@ -321,5 +346,11 @@ Repo Location TBD
 
 \section*{Acknowledgements}
 \section*{Funding}
+
+
+\bibliographystyle{plainnat}
+\bibliography{manuscript}
+
+
 
 \end{document}
