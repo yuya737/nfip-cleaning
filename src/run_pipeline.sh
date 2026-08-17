@@ -11,8 +11,8 @@ python download_claims.py
 echo "== 2/5: adjust claim dollar fields for inflation =="
 python adjust_inflation.py
 
-echo "== 3/5: triangulate claim geometries =="
-python triangulate_claims.py
+echo "== 3/5: triangulate claim geometries (pluvial claims only, causeOfDamage=4) =="
+python triangulate_claims.py --cause-of-damage 4
 
 echo "== 4/5: build AORC bilinear-corner request index (pluvial claims only) =="
 python build_aorc_pixel_day_index.py

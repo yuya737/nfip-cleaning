@@ -9,29 +9,33 @@ the three are available for a given claim into a single polygon
 ("triangulation"), which is a strict upper bound on the claim's true
 location and is usually far smaller than any single source's region alone.
 
-Which shapefile for which decade?
-------------------------------------
-`config.yaml`'s `block_group_shapefiles` / `zcta_shapefiles` map each
-claim *decade* (`yearOfLoss // 10 * 10`) explicitly to a shapefile. A
-decade with no entry means that source is skipped entirely for claims in
-it — this is why `zcta_shapefiles` has nothing before 2000: ZCTAs did not
-exist as a Census product yet, so there's nothing to check a pre-2000 ZIP
-against.
+Matching strategy is a flag, not a fixed choice
+--------------------------------------------------
+Which boundary vintage a claim's block-group FIPS / ZIP code gets checked
+against is a real methodological judgment call (see docs/methods.md for
+the empirical backstory), and reasonable people can weigh the tradeoffs
+differently. Rather than bake in one answer, `--block-group-strategy` and
+`--zcta-strategy` each independently select one of:
 
-Several decades in `block_group_shapefiles` intentionally point at the
-same file: checking real `censusBlockGroupFips` values against the 2010
-block-group release shows a 92-100% match rate for claims from *every*
-decade back to the 1970s regardless of loss year — including 1978, a
-decade before block groups existed as a nationwide census geography at
-all. FEMA's geocoding is retroactively assigning a roughly-current
-vintage to every record, not the historical loss-year boundary, so
-there's little benefit to a different block-group file per decade before
-2020 (where the match rate does drop, since the 2020 census redrew a
-meaningful share of block groups). ZCTAs are less lopsided — vintage
-choice barely moves the match rate either way — so each decade from 2000
-on just uses its own contemporaneous ZCTA release out of methodological
-cleanliness, not because it recovers meaningfully more claims. See
-docs/methods.md for the numbers behind both of these.
+  default       Block group: < matching_strategy_defaults.block_group_cutover_year
+                (2020) uses the 2010 vintage, >= it uses the 2020 vintage —
+                matches the empirical crossover in real censusBlockGroupFips
+                values (see docs/methods.md). ZIP: < zcta_coverage_start_year
+                (2000) is dropped entirely (no ZCTA vintage existed yet, and
+                unlike block group, FEMA doesn't geocode ZIP — it's raw WYO-
+                reported data, so there's no vintage-drift argument for
+                checking it against a boundary that postdates it); >= 2000
+                uses whichever configured ZCTA vintage is most recent.
+  closest       Whichever configured vintage's year is numerically closest
+                to the claim's yearOfLoss, ties broken toward the newer one.
+  most_recent   Always the newest configured vintage, regardless of year.
+  drop          Never use this source at all.
+
+config.yaml's block_group_vintages/zcta_vintages just declare what's
+available (keyed by the vintage's own year); which one a given claim
+actually uses is decided per-claim at run time from the strategy above,
+so adding a vintage there makes it selectable by closest/most_recent
+without touching anything else.
 
 Validating matches against the lat/lon box
 ---------------------------------------------
@@ -60,14 +64,18 @@ from tqdm import tqdm
 from conus import is_conus_block_group_fips
 from paths import (
     SHAPEFILE_ROOT,
-    BLOCK_GROUP_SHAPEFILES_BY_DECADE,
-    ZCTA_SHAPEFILES_BY_DECADE,
+    BLOCK_GROUP_VINTAGES,
+    ZCTA_VINTAGES,
+    BLOCK_GROUP_DEFAULT_CUTOVER_YEAR,
+    ZCTA_DEFAULT_COVERAGE_START_YEAR,
     INFLATION_ADJUSTED_PARQUET,
     TRIANGULATED_PARQUET,
 )
 
 GeometryByCode = Dict[str, BaseGeometry]
-GeometryByDecade = Dict[int, GeometryByCode]
+GeometryByVintage = Dict[int, GeometryByCode]
+
+STRATEGIES = ["default", "closest", "most_recent", "drop"]
 
 
 def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = 0.05):
@@ -86,10 +94,9 @@ def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = 0.05):
     )
 
 
-def decade_for_year(year) -> Optional[int]:
-    if pd.isna(year):
-        return None
-    return int(year) // 10 * 10
+# ---------------------------------------------------------------------------
+# Loading vintages
+# ---------------------------------------------------------------------------
 
 
 def _spec_files(spec):
@@ -104,14 +111,24 @@ def load_block_group_spec(spec) -> GeometryByCode:
         raise FileNotFoundError(f"No block-group files matched {spec}")
     geoms = {}
     for f in tqdm(files, desc=f"  block groups ({spec.get('glob') or spec.get('file')})"):
-        gdf = gpd.read_file(f)
-        if "GEOID" in gdf.columns:
-            geoids = gdf["GEOID"]
-        else:
+        columns = gpd.read_file(f, rows=0).columns
+        if "GEOID" in columns:
+            gdf = gpd.read_file(f)
+            geoms.update(zip(gdf["GEOID"], gdf["geometry"]))
+        elif "GEO_ID" in columns:
             # GENZ2010's old "gz_" naming ships GEO_ID like
             # "1500000US060014057002" (summary-level prefix + 12-digit GEOID).
-            geoids = gdf["GEO_ID"].str[-12:]
-        geoms.update(zip(geoids, gdf["geometry"]))
+            gdf = gpd.read_file(f)
+            geoms.update(zip(gdf["GEO_ID"].str[-12:], gdf["geometry"]))
+        elif {"STATE", "COUNTY", "TRACT", "BLKGROUP"}.issubset(columns):
+            # The 2000-vintage PREVGENZ release ships no GEOID field at all;
+            # TRACT is inconsistently zero-padded across states, so it has
+            # to be zfill(6)'d before concatenating.
+            gdf = gpd.read_file(f)
+            geoid = gdf["STATE"] + gdf["COUNTY"] + gdf["TRACT"].str.zfill(6) + gdf["BLKGROUP"]
+            geoms.update(zip(geoid, gdf["geometry"]))
+        else:
+            raise KeyError(f"{f}: no GEOID/GEO_ID/STATE+COUNTY+TRACT+BLKGROUP columns found ({list(columns)})")
     return geoms
 
 
@@ -126,27 +143,70 @@ def load_zcta_spec(spec) -> GeometryByCode:
     return geoms
 
 
-def load_by_decade(shapefiles_by_decade: dict, load_one_spec) -> GeometryByDecade:
-    """Load each distinct shapefile spec once, even if multiple decades share it."""
-    cache = {}
+def load_all_vintages(vintages: dict, load_one_spec) -> GeometryByVintage:
     result = {}
-    for decade, spec in shapefiles_by_decade.items():
-        key = tuple(sorted(spec.items()))
-        if key not in cache:
-            print(f"  loading for decade {decade}s: {spec}")
-            cache[key] = load_one_spec(spec)
-            print(f"    {len(cache[key]):,} geometries")
-        result[decade] = cache[key]
+    for year, spec in vintages.items():
+        print(f"  loading {year} vintage: {spec}")
+        result[year] = load_one_spec(spec)
+        print(f"    {len(result[year]):,} geometries")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Matching strategies
+# ---------------------------------------------------------------------------
+
+
+def closest_vintage(year, vintages: GeometryByVintage) -> Optional[int]:
+    if not vintages:
+        return None
+    if year is None or pd.isna(year):
+        return max(vintages)
+    year = int(year)
+    # Tie-break toward the newer vintage.
+    return min(vintages, key=lambda v: (abs(v - year), -v))
+
+
+def most_recent_vintage(vintages: GeometryByVintage) -> Optional[int]:
+    return max(vintages) if vintages else None
+
+
+def block_group_default_vintage(year, vintages: GeometryByVintage, cutover_year: int) -> int:
+    if 2010 not in vintages or 2020 not in vintages:
+        raise KeyError(
+            "block-group 'default' strategy requires both the 2010 and 2020 vintages "
+            f"to be configured in block_group_vintages (have: {sorted(vintages)})"
+        )
+    if year is None or pd.isna(year) or year < cutover_year:
+        return 2010
+    return 2020
+
+
+def zcta_default_vintage(year, vintages: GeometryByVintage, coverage_start_year: int) -> Optional[int]:
+    if year is None or pd.isna(year) or year < coverage_start_year:
+        return None
+    return most_recent_vintage(vintages)
+
+
+def vintage_for_strategy(strategy: str, year, vintages: GeometryByVintage, default_fn) -> Optional[int]:
+    if strategy == "drop":
+        return None
+    if strategy == "most_recent":
+        return most_recent_vintage(vintages)
+    if strategy == "closest":
+        return closest_vintage(year, vintages)
+    if strategy == "default":
+        return default_fn(year, vintages)
+    raise ValueError(f"Unknown matching strategy {strategy!r}; expected one of {STRATEGIES}")
 
 
 def select_validated_geometry(
     code, geometry_by_code: GeometryByCode, latlon_box
 ) -> Tuple[Optional[BaseGeometry], str]:
-    """Look up a code, spatially validated against the claim's lat/lon box.
+    """Look up a code in a single vintage's geometry set, spatially validated.
 
     Returns (geometry, status), where status is one of:
-      not_found                code isn't in the decade's shapefile
+      not_found                code isn't in this vintage's shapefile
       validated                the polygon overlaps latlon_box
       unvalidated_no_latlon    a match exists but there's no lat/lon to check it against
       spatially_inconsistent   the polygon doesn't overlap latlon_box
@@ -162,31 +222,52 @@ def select_validated_geometry(
 
 
 def triangulate_geometry(
-    row, block_groups_by_decade: GeometryByDecade, zctas_by_decade: GeometryByDecade
+    row,
+    block_group_vintages: GeometryByVintage,
+    zcta_vintages: GeometryByVintage,
+    bg_strategy: str,
+    zcta_strategy: str,
+    bg_cutover_year: int,
+    zcta_coverage_start_year: int,
 ):
     latlon_box = None
     if pd.notna(row["latitude"]) and pd.notna(row["longitude"]):
         latlon_box = create_lat_lon_rect(row["latitude"], row["longitude"])
 
-    decade = decade_for_year(row.get("yearOfLoss"))
+    year = row.get("yearOfLoss")
     geometries, sources = [], []
 
-    if decade in block_groups_by_decade:
-        bg_geom, bg_status = select_validated_geometry(
-            row["censusBlockGroupFips"], block_groups_by_decade[decade], latlon_box
-        )
+    bg_vintage = vintage_for_strategy(
+        bg_strategy, year, block_group_vintages,
+        lambda y, v: block_group_default_vintage(y, v, bg_cutover_year),
+    )
+    if bg_vintage is None:
+        bg_geom = None
+        bg_status = "dropped_by_strategy" if bg_strategy == "drop" else "no_vintage_selected"
     else:
-        bg_geom, bg_status = None, "no_shapefile_for_decade"
+        bg_geom, bg_status = select_validated_geometry(
+            row["censusBlockGroupFips"], block_group_vintages[bg_vintage], latlon_box
+        )
     if bg_geom is not None:
         geometries.append(bg_geom)
         sources.append("block_group")
 
-    if decade in zctas_by_decade:
-        zip_geom, zip_status = select_validated_geometry(
-            row["reportedZipCode"], zctas_by_decade[decade], latlon_box
-        )
+    zip_vintage = vintage_for_strategy(
+        zcta_strategy, year, zcta_vintages,
+        lambda y, v: zcta_default_vintage(y, v, zcta_coverage_start_year),
+    )
+    if zip_vintage is None:
+        zip_geom = None
+        if zcta_strategy == "drop":
+            zip_status = "dropped_by_strategy"
+        elif zcta_strategy == "default" and (year is None or pd.isna(year) or year < zcta_coverage_start_year):
+            zip_status = "before_zcta_coverage"
+        else:
+            zip_status = "no_vintage_selected"
     else:
-        zip_geom, zip_status = None, "no_shapefile_for_decade"
+        zip_geom, zip_status = select_validated_geometry(
+            row["reportedZipCode"], zcta_vintages[zip_vintage], latlon_box
+        )
     if zip_geom is not None:
         geometries.append(zip_geom)
         sources.append("zip")
@@ -207,22 +288,38 @@ def triangulate_geometry(
             "n_geometry_sources": len(geometries),
             "geometry_sources": "+".join(sources),
             "geometry_is_empty": is_empty,
-            "decade_used": decade,
+            "block_group_vintage_used": bg_vintage,
             "block_group_match_status": bg_status,
+            "zip_vintage_used": zip_vintage,
             "zip_match_status": zip_status,
         }
     )
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", default=str(INFLATION_ADJUSTED_PARQUET))
     parser.add_argument("--output", default=str(TRIANGULATED_PARQUET))
+    parser.add_argument("--block-group-strategy", choices=STRATEGIES, default="default")
+    parser.add_argument("--zcta-strategy", choices=STRATEGIES, default="default")
+    parser.add_argument(
+        "--cause-of-damage",
+        default=None,
+        help='Restrict to a single causeOfDamage code, e.g. "4" for pluvial claims '
+        "(see paths.PLUVIAL_CAUSE_CODE). Default: no filter, all claims.",
+    )
     args = parser.parse_args()
 
-    print(f"Loading claims from {args.input}...")
+    print(f"Block-group matching strategy: {args.block_group_strategy}")
+    print(f"ZCTA matching strategy: {args.zcta_strategy}")
+
+    print(f"\nLoading claims from {args.input}...")
     claims_df = pd.read_parquet(args.input)
     print(f"Loaded {len(claims_df):,} claims")
+
+    if args.cause_of_damage is not None:
+        claims_df = claims_df[claims_df["causeOfDamage"] == args.cause_of_damage]
+        print(f"Restricted to causeOfDamage == {args.cause_of_damage!r}: {len(claims_df):,} claims")
 
     claims_df = claims_df.dropna(subset=["censusBlockGroupFips", "reportedZipCode"])
     print(f"Filtered to {len(claims_df):,} claims with a block-group FIPS and ZIP code")
@@ -234,10 +331,10 @@ def main():
     )
     claims_df = claims_df[is_conus]
 
-    print("\nLoading block-group shapefiles by decade...")
-    block_groups_by_decade = load_by_decade(BLOCK_GROUP_SHAPEFILES_BY_DECADE, load_block_group_spec)
-    print("Loading ZCTA shapefiles by decade...")
-    zctas_by_decade = load_by_decade(ZCTA_SHAPEFILES_BY_DECADE, load_zcta_spec)
+    print("\nLoading block-group vintages...")
+    block_group_vintages = load_all_vintages(BLOCK_GROUP_VINTAGES, load_block_group_spec)
+    print("Loading ZCTA vintages...")
+    zcta_vintages = load_all_vintages(ZCTA_VINTAGES, load_zcta_spec)
 
     claims_df[["latitude", "longitude"]] = claims_df[["latitude", "longitude"]].astype(float)
 
@@ -245,7 +342,14 @@ def main():
     tqdm.pandas()
     tri_result = claims_df.progress_apply(
         triangulate_geometry,
-        args=(block_groups_by_decade, zctas_by_decade),
+        args=(
+            block_group_vintages,
+            zcta_vintages,
+            args.block_group_strategy,
+            args.zcta_strategy,
+            BLOCK_GROUP_DEFAULT_CUTOVER_YEAR,
+            ZCTA_DEFAULT_COVERAGE_START_YEAR,
+        ),
         axis=1,
     )
     claims_df[tri_result.columns] = tri_result

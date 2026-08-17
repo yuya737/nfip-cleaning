@@ -13,11 +13,11 @@ for the output schema.
 ## Repository layout
 
 ```
-src/            pipeline scripts, run in numeric order (see run_pipeline.sh)
+src/            pipeline scripts, run in dependency order (see run_pipeline.sh)
 docs/           methods write-up and data dictionary
 data/raw/       downloaded source files (gitignored — see below)
-data/interim/   intermediate pipeline outputs (gitignored)
-data/processed/ final per-year datasets (this is what's bundled/released)
+data/interim/   intermediate pipeline outputs (gitignored) — current end-of-pipeline output lives here for now, see below
+data/processed/ intended home for the final released dataset; not populated by the default run yet (NSI refinement is disabled — see docs/methods.md)
 config.yaml.example   copy to config.yaml and fill in local paths
 environment.yml
 ```
@@ -46,9 +46,10 @@ source URLs).
 src/run_pipeline.sh
 ```
 
-or run steps individually — each reads its inputs from the previous
-step's output path (`src/paths.py`), so once those exist a step can be
-re-run on its own:
+restricted to pluvial claims (`causeOfDamage == "4"`) by default — that's
+a flag, not a hardcoded choice, see below. Or run steps individually —
+each reads its inputs from the previous step's output path
+(`src/paths.py`), so once those exist a step can be re-run on its own:
 
 1. `download_claims.py` — raw FEMA claims + FRED inflation series
 2. `adjust_inflation.py` — inflation-adjust dollar fields
@@ -59,7 +60,26 @@ re-run on its own:
 
 `data/interim/claims_pluvial_corrected.parquet` is the current
 end-of-pipeline output; `data/processed/` isn't populated by the default
-run yet.
+run yet (see `docs/methods.md`'s Known limitations).
+
+### Key flags
+
+Several methodological choices in this pipeline are run-time flags
+rather than fixed answers, deliberately — see `docs/methods.md` for why
+each exists and the numbers behind the tradeoffs. Full list on any
+script via `--help`; the ones worth knowing about:
+
+- `triangulate_claims.py --block-group-strategy` / `--zcta-strategy`
+  `{default,closest,most_recent,drop}` — which census boundary vintage a
+  claim's block-group/ZIP code is checked against.
+- `triangulate_claims.py --cause-of-damage <code>` — restrict to a single
+  `causeOfDamage` code (`run_pipeline.sh` passes `4` for pluvial).
+- `correct_pluvial_dates.py --min-hourly-precip-mm <value>` — override
+  the uniform precipitation threshold for a single run.
+- `correct_pluvial_dates.py --threshold-netcdf <path>
+  [--threshold-netcdf-var <name>]` — use a spatially-varying threshold
+  from a NetCDF file instead of a constant; mutually exclusive with
+  `--min-hourly-precip-mm`.
 
 ## Why the data isn't redistributed raw
 

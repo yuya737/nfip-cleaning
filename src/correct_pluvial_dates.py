@@ -33,10 +33,13 @@ pluvialCorrectionStatus values:
   no_aorc_data_in_window         AORC had no valid (non-missing) values anywhere in the window
 """
 
+import argparse
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from aorc_grid import pixel_to_latlon
 from paths import (
     TRIANGULATED_PARQUET,
     CLAIM_PIXEL_LOOKUP_PARQUET,
@@ -44,8 +47,8 @@ from paths import (
     AORC_HOURLY_PARQUET,
     PLUVIAL_CORRECTED_PARQUET,
     PLUVIAL_SEARCH_WINDOW_DAYS,
-    PLUVIAL_MIN_HOURLY_PRECIP_MM,
 )
+from precip_threshold import UniformThresholdGrid, NetCDFThresholdGrid, default_threshold_grid
 
 N_CORNERS = 4
 CLAIM_BATCH_SIZE = 50_000
@@ -117,19 +120,26 @@ def compute_interpolated_daily_max(lookup_batch: pd.DataFrame, hourly: pd.DataFr
 
 
 def classify(row):
-    """Decide accepted/corrected/no-qualifying-precip/no-data for one claim."""
+    """Decide accepted/corrected/no-qualifying-precip/no-data for one claim.
+
+    row["threshold_mm"] is resolved by the caller (see main) from the precip
+    threshold grid before classify ever runs — for a uniform grid every row
+    gets the same value; for a NetCDFThresholdGrid each claim's own value,
+    both computed in one batched call rather than looked up per-row here.
+    """
+    threshold_mm = row["threshold_mm"]
     if pd.notna(row["reported_day_precip_mm"]) and (
-        row["reported_day_precip_mm"] >= PLUVIAL_MIN_HOURLY_PRECIP_MM
+        row["reported_day_precip_mm"] >= threshold_mm
     ):
         return pd.Series([row["dateOfLoss"], "accepted_as_reported", row["reported_day_precip_mm"]])
     if pd.notna(row["best_precip_mm"]):
-        if row["best_precip_mm"] >= PLUVIAL_MIN_HOURLY_PRECIP_MM:
+        if row["best_precip_mm"] >= threshold_mm:
             return pd.Series([row["best_date"], "corrected", row["best_precip_mm"]])
         return pd.Series([row["dateOfLoss"], "no_qualifying_precip_in_window", row["best_precip_mm"]])
     return pd.Series([row["dateOfLoss"], "no_aorc_data_in_window", np.nan])
 
 
-def classify_batch(lookup_batch: pd.DataFrame, hourly: pd.DataFrame) -> pd.DataFrame:
+def classify_batch(lookup_batch: pd.DataFrame, hourly: pd.DataFrame, threshold_by_id: pd.Series) -> pd.DataFrame:
     per_day = compute_interpolated_daily_max(lookup_batch, hourly)
 
     claims = lookup_batch[["id", "dateOfLoss"]].drop_duplicates("id")
@@ -150,17 +160,70 @@ def classify_batch(lookup_batch: pd.DataFrame, hourly: pd.DataFrame) -> pd.DataF
     )
 
     per_claim = claims.merge(reported, on="id", how="left").merge(best_rows, on="id", how="left")
+    per_claim["threshold_mm"] = per_claim["id"].map(threshold_by_id)
     per_claim[["correctedDateOfLoss", "pluvialCorrectionStatus", "pluvialCorrectionMaxPrecipMm"]] = (
         per_claim.apply(classify, axis=1)
     )
-    return per_claim
+    return per_claim.drop(columns="threshold_mm")
 
 
 def main():
     """Classify every pluvial claim in batches, then write the full corrected claims table."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    threshold_source = parser.add_mutually_exclusive_group()
+    threshold_source.add_argument(
+        "--min-hourly-precip-mm",
+        type=float,
+        default=None,
+        help="Override config.yaml's pluvial_correction.min_hourly_precip_mm for this run "
+        "with a different constant (still a uniform grid). Mutually exclusive with "
+        "--threshold-netcdf.",
+    )
+    threshold_source.add_argument(
+        "--threshold-netcdf",
+        default=None,
+        help="Path to a NetCDF file defining a spatially-varying threshold instead of a "
+        "constant — see precip_threshold.NetCDFThresholdGrid. Sampled nearest-neighbor at "
+        "each claim's location; doesn't need to be on the AORC grid.",
+    )
+    parser.add_argument(
+        "--threshold-netcdf-var",
+        default=None,
+        help="Which data variable to read from --threshold-netcdf, if it has more than one.",
+    )
+    args = parser.parse_args()
+
+    if args.threshold_netcdf:
+        threshold_grid = NetCDFThresholdGrid(args.threshold_netcdf, var=args.threshold_netcdf_var)
+    elif args.min_hourly_precip_mm is not None:
+        threshold_grid = UniformThresholdGrid(args.min_hourly_precip_mm)
+    else:
+        threshold_grid = default_threshold_grid()
+    print(f"Precip threshold grid: {threshold_grid}")
+
     print(f"Loading claim/pixel lookup from {CLAIM_PIXEL_LOOKUP_PARQUET}...")
     lookup = pd.read_parquet(CLAIM_PIXEL_LOOKUP_PARQUET)
     lookup["dateOfLoss"] = pd.to_datetime(lookup["dateOfLoss"])
+
+    print("Reconstructing each claim's location from its 4 corner pixels, for the threshold grid...")
+    corner_lat, corner_lon = pixel_to_latlon(
+        lookup["aorc_pixel_row"].to_numpy(), lookup["aorc_pixel_col"].to_numpy()
+    )
+    claim_latlon = (
+        pd.DataFrame(
+            {
+                "id": lookup["id"].values,
+                "weighted_lat": corner_lat * lookup["weight"].values,
+                "weighted_lon": corner_lon * lookup["weight"].values,
+            }
+        )
+        .groupby("id")[["weighted_lat", "weighted_lon"]]
+        .sum()
+    )
+    threshold_by_id = pd.Series(
+        threshold_grid.resolve_for_claims(claim_latlon["weighted_lat"].values, claim_latlon["weighted_lon"].values),
+        index=claim_latlon.index,
+    )
 
     print(f"Loading AORC hourly table from {AORC_HOURLY_PARQUET}...")
     hourly = pd.read_parquet(
@@ -179,7 +242,7 @@ def main():
     for i in range(n_batches):
         batch_ids = claim_ids[i * CLAIM_BATCH_SIZE : (i + 1) * CLAIM_BATCH_SIZE]
         lookup_batch = lookup_indexed.loc[batch_ids].reset_index(drop=True)
-        per_claim_batches.append(classify_batch(lookup_batch, hourly))
+        per_claim_batches.append(classify_batch(lookup_batch, hourly, threshold_by_id))
         if (i + 1) % 5 == 0 or i + 1 == n_batches:
             print(f"  batch {i + 1}/{n_batches} done")
 

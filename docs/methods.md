@@ -30,19 +30,30 @@ data/interim/claims_pluvial_corrected.parquet
 |---|---|---|---|
 | FEMA OpenFEMA | FIMA NFIP Redacted Claims v2 (`FimaNfipClaims.parquet`) | Public bulk download, no authentication | US government work, public domain |
 | FRED (St. Louis Fed) | Personal consumption expenditures price index, series `DPCERD3Q086SBEA` | Public CSV endpoint, no authentication | Public |
-| US Census Bureau | Cartographic boundary shapefiles: block groups and ZCTAs, assigned per claim decade rather than one file per claim year (see Step 2) | Public bulk download | Public domain |
+| US Census Bureau | Cartographic boundary shapefiles: block groups and ZCTAs, staged as a small set of vintages and assigned to claims by a run-time strategy flag rather than one file per claim year (see Step 2) | Public bulk download | Public domain |
 | NOAA | Analysis of Record for Calibration (AORC) v1.1, 30 arc-second (~800 m) / hourly | Public, `s3://noaa-nws-aorc-v1-1-1km`, no-sign-request | Public |
 
 None of these sources are redistributed in this repository in raw form
 (see `README.md`). Each pipeline step downloads or expects a locally
 staged copy, documented at the point of use.
 
-## Scope: CONUS only
+## Scope: CONUS, pluvial claims only
 
 This dataset covers the 48 contiguous states and the District of
 Columbia. NFIP claims also exist for Alaska, Hawaii, Puerto Rico, and
 other territories, which are excluded by design rather than dropped as a
 side effect.
+
+`run_pipeline.sh` also restricts triangulation to pluvial claims
+(`causeOfDamage == "4"`, `--cause-of-damage 4` on `triangulate_claims.py`
+— see `paths.PLUVIAL_CAUSE_CODE`), matching the current project focus on
+the AORC date-correction step, which only ever evaluates that subset
+anyway. This is a flag, not a hardcoded restriction: dropping
+`--cause-of-damage 4` from the pipeline invocation triangulates every
+claim regardless of cause, the same way `--block-group-strategy` and
+`--zcta-strategy` are flags rather than fixed choices (see Step 2). Note
+that `causeOfDamage == "4"` is itself a coarse proxy for "pluvial," not a
+clean label — see Step 3 for what that does and doesn't capture.
 
 ## Step 1: Inflation adjustment (`adjust_inflation.py`)
 
@@ -64,10 +75,10 @@ into a single polygon per claim. This places a strict upper bound on the claim's
 location, typically substantially smaller than any one source's region
 alone.
 
-### Block-group and ZCTA shapefile assignment
+### Block-group and ZCTA shapefile assignment is a flag, not a fixed rule
 
 Census block-group and ZCTA boundaries are redrawn each decennial cycle,
-so the default assumption would be to match each claim to the boundary
+so the naive assumption would be to match each claim to the boundary
 vintage in effect at its loss year. Testing against the real claims data
 does not support that assumption. Matching `censusBlockGroupFips` values
 against the official 2010 decennial block-group release yields a 92-100%
@@ -82,50 +93,70 @@ match rate against the 2020 release increases gradually with loss year
 rather than switching at a specific year — even claims with a 2020s loss
 year are still approximately 10% exclusively-matched to the 2010 vintage.
 
+Rather than pick one rule and defend it as *the* answer, which vintage a
+claim's block-group FIPS / ZIP code gets checked against is a run-time
+choice: `triangulate_claims.py`'s `--block-group-strategy` and
+`--zcta-strategy` flags each independently select one of four strategies,
+and `config.yaml`'s `block_group_vintages`/`zcta_vintages` just declare
+which vintages are available to choose from (keyed by the vintage's own
+year, not a claim decade) — adding a vintage there makes it selectable
+without changing anything else.
+
+- **`default`** — Block group: claims before
+  `matching_strategy_defaults.block_group_cutover_year` (2020) use the
+  2010 vintage, claims from that year on use the 2020 vintage. ZIP: claims
+  before `zcta_coverage_start_year` (2000) drop the ZIP source entirely
+  (ZCTAs didn't exist yet); claims from 2000 on use whichever configured
+  ZCTA vintage is most recent.
+- **`closest`** — whichever configured vintage's year is numerically
+  closest to the claim's `yearOfLoss`, ties broken toward the newer one.
+- **`most_recent`** — always the newest configured vintage, regardless of
+  loss year.
+- **`drop`** — never use that source at all, for either geography.
+
 A per-claim membership test against every available shapefile release
-(using whichever release matches) would recover more matches than any
-decade-based rule, since the transition between releases is gradual
-rather than sharp. This approach was prototyped and confirmed to recover
-matches that a decade-based rule misses in every decade. An explicit
-per-decade shapefile mapping was used instead. `config.yaml`'s
-`block_group_shapefiles` maps each claim decade (`yearOfLoss // 10 * 10`)
-directly to one shapefile, with no fallback to another release if the
-assigned decade's shapefile does not match. This is a deliberate
-precision/auditability tradeoff: an explicit per-decade table can be
-stated and audited in a few lines ("claims from the 1970s through the
-2010s use the 2010 Census block-group release. 2020s claims use the 2020
+(`closest`, roughly) recovers more matches than the `default` decade rule
+for block group, since the transition between releases is gradual rather
+than sharp — prototyped and confirmed to recover matches `default` misses
+in every decade. `default` is still the shipped default because it's a
+tradeoff worth making deliberately, not avoiding: an explicit two-vintage
+cutover can be stated and audited in one sentence ("pre-2020 claims use
+the 2010 Census block-group release, 2020-on claims use the 2020
 release"), whereas per-claim membership testing requires justifying a
 data-driven selection with no documented counterpart in FEMA's own
-process. The measured cost of this choice is that testing both the 2010
-and 2020 releases per claim would recover approximately 88,000 additional
-CONUS claims (3.4%) that match only the release the decade table does not
-assign to their era. `decade_used` (see `docs/data_dictionary.md`)
-records the decade bucket applied to each claim. This value is a lookup
-key into `block_group_shapefiles` and `zcta_shapefiles` independently,
-not a single shared vintage: for a claim with `decade_used = 2000`, the
-block-group lookup uses the 2010 release while the ZIP lookup uses the
-2000 release, since the two configuration tables are not required to
-agree.
+process. The measured cost is that testing both the 2010 and 2020
+releases per claim (`closest`/`most_recent` would each get most of the
+way there) recovers approximately 88,000 additional CONUS claims (3.4%)
+that match only the release `default` doesn't assign to their era —
+`--block-group-strategy closest` is there specifically to quantify or
+recover that gap when it matters more than auditability does.
+`block_group_vintage_used` / `zip_vintage_used` (see
+`docs/data_dictionary.md`) record which vintage year was actually applied
+to each claim, and `block_group_match_status` / `zip_match_status` record
+`dropped_by_strategy` when a `drop` strategy was in effect for that
+source.
 
-Most decades in `block_group_shapefiles` point at the same file — the
-official 2010 decennial release (Census's GENZ2010 release, in the
-legacy "gz_" naming convention) — with only the 2020s decade assigned to
-the 2020 release. Together, these two releases leave 1,017 CONUS claims
-(0.04%) matching neither, a residual accepted without further
-investigation. Adding the 1990 and 2000 census-cycle releases was tested
-and found to reduce this residual by only a few thousand claims, not
-justifying the added pipeline complexity.
+Under `default`, block group draws from just the 2010 and 2020 official
+decennial releases (Census's GENZ2010 release, in the legacy "gz_" naming
+convention, and the modern `cb_2020` release), leaving 1,017 CONUS claims
+(0.04%) matching neither — a residual accepted without further
+investigation. Adding the 1990 and 2000 census-cycle releases as
+additional `default` candidates was tested and found to reduce this
+residual by only a few thousand claims, not justifying hardcoding them
+into `default`; they're staged in `block_group_vintages` regardless, so
+`closest`/`most_recent` already have access to them.
 
-Once a decade's shapefile is selected, the match is validated against
-FEMA's rounded lat/lon rather than accepted on GEOID string match alone.
-FEMA rounds reported coordinates to one decimal place, which guarantees
-the claim's true location falls within a 0.1 x 0.1 degree box centered on
-the reported point (the same box used as the third triangulation source —
-see `create_lat_lon_rect`). A code that matches the decade's shapefile
-GEOID but whose polygon does not overlap that box is treated as
-spatially inconsistent and excluded from the claim's intersection.
-`block_group_match_status` and `zip_match_status` record this outcome per
-claim.
+Once a vintage is selected (by whichever strategy), the match is
+validated against FEMA's rounded lat/lon rather than accepted on GEOID
+string match alone. FEMA rounds reported coordinates to one decimal
+place, which guarantees the claim's true location falls within a 0.1 x
+0.1 degree box centered on the reported point (the same box used as the
+third triangulation source — see `create_lat_lon_rect`). A code that
+matches the selected vintage's GEOID but whose polygon does not overlap
+that box is treated as spatially inconsistent and excluded from the
+claim's intersection — this doesn't trigger falling back to a different
+vintage, regardless of strategy. `block_group_match_status` and
+`zip_match_status` record this outcome per claim.
 
 ZCTAs exist only from the 2000 census onward. There is no pre-2000 ZCTA
 release, official or otherwise. This was verified directly: Census's
@@ -139,26 +170,31 @@ historical boundary needs. Unlike `censusBlockGroupFips` and
 service assigns. Per FEMA's own data dictionary it is raw data "as
 reported by WYO partners," so the retroactive-geocoding rationale used
 for the block-group vintage above does not apply to ZIP-vintage
-selection. `zcta_shapefiles` accordingly has no entry before the year
-2000. Pre-2000 claims skip the ZIP source entirely
-(`zip_match_status = "no_shapefile_for_decade"`) and fall back to block
-group and lat/lon only. This is recorded transparently per claim via
-`geometry_sources` / `n_geometry_sources`.
+selection — which is exactly why `default`'s ZIP rule is a hard drop
+below 2000 rather than borrowing a later vintage the way block group
+does. `closest` and `most_recent` don't observe that gate (they'll check
+even a 1978 claim's ZIP against the 2020 ZCTA if selected), which is
+deliberate: they exist to probe the alternative, not to be "more
+correct" than `default`.
 
-Unlike the block-group case, ZCTA-release choice has little effect on
+Unlike the block-group case, ZCTA-vintage choice has little effect on
 match rate: testing `reportedZipCode` against the 2000, 2010, and 2020
 ZCTA releases shows all three track each other closely within any given
-decade, and a strict per-decade rule loses only approximately 1,900
-claims relative to testing all three — negligible relative to the
-block-group tradeoff above. `zcta_shapefiles` nonetheless assigns each
-decade from 2000 onward its own contemporaneous release (for example,
-2000s claims use the 2000 release) for methodological consistency, not
-because it materially increases match rate. The larger, unrelated finding
-for 1970s and 1980s claims is that a substantial share of
-`reportedZipCode` values are empty strings — frequently paired with
-`state == "UN"` (unknown) — rather than real ZIP codes that failed to
-match a ZCTA. This is a data-completeness gap in the source records, not
-a boundary-matching problem.
+decade, and `default`'s post-2000 rule (always the most-recent vintage)
+loses only on the order of a couple thousand claims relative to testing
+all three — negligible relative to the block-group tradeoff above. This
+is also why `default`'s ZIP rule doesn't need block group's two-vintage
+cutover machinery: with vintage choice mattering this little, "always use
+whichever configured vintage is newest" already captures nearly all the
+achievable coverage, whereas an earlier version of this pipeline instead
+gave each decade its own contemporaneous release (e.g. 2000s claims used
+the 2000 vintage) for consistency rather than because it recovered more
+matches — measurably worse than always-most-recent, so `default` no
+longer does that. The larger, unrelated finding for 1970s and 1980s
+claims is that a substantial share of `reportedZipCode` values are empty
+strings — frequently paired with `state == "UN"` (unknown) — rather than
+real ZIP codes that failed to match a ZCTA. This is a data-completeness
+gap in the source records, not a boundary-matching problem.
 
 A claim's three location sources can each individually pass validation
 against the lat/lon box while failing to overlap one another — for
@@ -180,8 +216,8 @@ resolved by it.
 
 For each claim coded `"4"`, the reported `dateOfLoss` is checked against
 whether it coincides with a day of meaningful precipitation (maximum
-hourly APCP exceeding `min_hourly_precip_mm`, default 5.0 mm) at the
-claim's triangulated location, using NOAA's public AORC v1.1 archive
+hourly APCP exceeding a threshold, default 5.0 mm) at the claim's
+triangulated location, using NOAA's public AORC v1.1 archive
 (30 arc-second / ~800 m grid, hourly, CONUS, 1979-present). If it does not, a
 `search_window_days` window (default +/- 7 days) is searched for the
 wettest day, and if that day clears the threshold it is treated as the
@@ -189,6 +225,36 @@ corrected date. The original `dateOfLoss` is never overwritten.
 `correctedDateOfLoss` and `pluvialCorrectionStatus` record the outcome
 per claim (see `docs/data_dictionary.md` for status values), allowing
 downstream users to decide whether to apply the correction.
+
+The threshold itself is a "grid" (`precip_threshold.py`), not a bare
+constant — there's no principled reason a desert claim and a rainforest
+claim need the same number of mm to count as meaningful rain. Two
+implementations share one interface (`grid(lat, lon)` for a single point,
+`grid.resolve_for_claims(lats, lons)` for a vectorized batch — see the
+module for why the batched form is the one real runs use):
+
+- `UniformThresholdGrid` — the default, and what this pipeline used
+  before this module existed: the same constant everywhere.
+  `--min-hourly-precip-mm` overrides `config.yaml`'s
+  `pluvial_correction.min_hourly_precip_mm` for a single run without
+  editing the config file.
+- `NetCDFThresholdGrid` — `--threshold-netcdf <path>` samples a
+  user-supplied NetCDF nearest-neighbor at each claim's location instead;
+  `--threshold-netcdf-var` picks the data variable if the file has more
+  than one. The file doesn't need to be on the AORC grid or any
+  particular resolution. Since each claim's exact (lat, lon) isn't
+  persisted in `CLAIM_PIXEL_LOOKUP_PARQUET` (only its 4 bilinear corner
+  pixel indices are, to keep that table small), it's reconstructed from
+  the weighted sum of the 4 corners' coordinates using the same weights
+  used for precipitation itself (`aorc_grid.pixel_to_latlon`) — this is
+  exact, not an approximation, since both the corner lookup and the
+  reconstruction are affine in row/col.
+
+The two CLI flags are mutually exclusive. Tested end to end with a
+synthetic coarse NetCDF (threshold 5mm west of -95 deg, an unreachable
+999mm east of it): the correction rate dropped from 16.8% (uniform 5mm)
+to 4.3%, confirming the spatial lookup is genuinely per-claim rather than
+falling back to a single value.
 
 Day boundaries are evaluated in each claim's own local time zone rather
 than a single national reference clock. `timezone_utils.py` resolves the
@@ -229,14 +295,30 @@ reduction is printed at run time.
 ## Known limitations
 
 - **CONUS only.** Alaska, Hawaii, Puerto Rico, and other territories are
-  excluded (see "Scope: CONUS only" above) because shapefile and AORC
-  coverage do not extend there, not because their claims are lower
-  quality.
-- A small residual of CONUS claims with a block-group FIPS (0.04%, 1,017
-  claims) matches neither the 2010 nor the 2020 block-group release, even
-  after restricting to CONUS.  Reasosns TBD.
+  excluded (see "Scope" above) because shapefile and AORC coverage do not
+  extend there, not because their claims are lower quality.
+- **Pluvial only, by default.** `run_pipeline.sh` restricts triangulation
+  to `causeOfDamage == "4"` claims (see "Scope" above); the rest of the
+  claims population is triangulated correctly if `--cause-of-damage` is
+  dropped, but isn't part of the default run's output.
+- Under the `default` matching strategy, a small residual of CONUS claims
+  with a block-group FIPS (0.04%, 1,017 claims) matches neither the 2010
+  nor the 2020 block-group release — accepted without further
+  investigation into the specific cause (see Step 2); `--block-group-strategy
+  closest`/`most_recent` can recover some of these if it matters more than
+  the residual's size suggests it should.
 - `causeOfDamage == "4"` is a coarse proxy for "pluvial," not a clean
   label (see Step 3).
-- Pre-2000 triangulation cannot use a ZCTA boundary (see Step 2).
+- Pre-2000 triangulation cannot use a ZCTA boundary under the `default`
+  strategy (see Step 2).
 - Pre-1979 claims are not eligible for pluvial date correction, since
   AORC coverage begins in 1979 (see Step 3).
+- The precip threshold is spatially uniform by default
+  (`UniformThresholdGrid`, see Step 3); a real spatially-varying grid
+  requires supplying one via `--threshold-netcdf` — none ships with the
+  pipeline.
+- **`data/processed/` is not currently populated.** NSI structure
+  refinement (`refine_with_nsi.py`) is commented out of `run_pipeline.sh`;
+  `data/interim/claims_pluvial_corrected.parquet` is the actual
+  end-of-pipeline output today, despite `data/processed/` being described
+  elsewhere as where the released dataset lives.

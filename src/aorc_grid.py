@@ -41,6 +41,23 @@ def is_within_grid(lat: float, lon: float) -> bool:
     )
 
 
+def pixel_to_latlon(row, col):
+    """Center lat/lon of a grid pixel (inverse of latlon_to_bilinear_corners'
+    row/col). Vectorized — row/col may be scalars or numpy arrays.
+
+    Used to reconstruct a claim's representative (lat, lon) from its 4
+    stored corner pixels + bilinear weights (see precip_threshold.py) when
+    a downstream step needs real coordinates but only pixel indices were
+    persisted — the weighted sum of the 4 corners' pixel_to_latlon values,
+    using the same weights latlon_to_bilinear_corners produced, exactly
+    reconstructs the original point (both are affine in row/col), not an
+    approximation.
+    """
+    lat = AORC_LAT_START + row * AORC_GRID_STEP_DEG
+    lon = AORC_LON_START + col * AORC_GRID_STEP_DEG
+    return lat, lon
+
+
 def latlon_to_bilinear_corners(lat: float, lon: float):
     """The 4 grid pixels surrounding a WGS84 point, with bilinear weights.
 

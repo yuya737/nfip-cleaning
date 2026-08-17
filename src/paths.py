@@ -32,14 +32,26 @@ PROCESSED_DIR = REPO_ROOT / "data" / "processed"
 for _d in (RAW_DIR, INTERIM_DIR, PROCESSED_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# Keys are decade start years (1970, 1980, ...); a decade missing from
-# ZCTA_SHAPEFILES_BY_DECADE means that source is skipped for claims in it.
-BLOCK_GROUP_SHAPEFILES_BY_DECADE = {int(k): v for k, v in _config["block_group_shapefiles"].items()}
-ZCTA_SHAPEFILES_BY_DECADE = {int(k): v for k, v in _config["zcta_shapefiles"].items()}
+# Keys are the vintage's own year (1990, 2000, 2010, 2020, ...) — NOT a
+# claim decade. Which vintage a given claim uses is a run-time choice (see
+# triangulate_claims.py's --block-group-strategy/--zcta-strategy); this is
+# just the set of what's available to choose from.
+BLOCK_GROUP_VINTAGES = {int(k): v for k, v in _config["block_group_vintages"].items()}
+ZCTA_VINTAGES = {int(k): v for k, v in _config["zcta_vintages"].items()}
+
+BLOCK_GROUP_DEFAULT_CUTOVER_YEAR = _config["matching_strategy_defaults"]["block_group_cutover_year"]
+ZCTA_DEFAULT_COVERAGE_START_YEAR = _config["matching_strategy_defaults"]["zcta_coverage_start_year"]
 
 PLUVIAL_SEARCH_WINDOW_DAYS = _config["pluvial_correction"]["search_window_days"]
 PLUVIAL_MIN_HOURLY_PRECIP_MM = _config["pluvial_correction"]["min_hourly_precip_mm"]
 AORC_COVERAGE_START = _config["pluvial_correction"]["aorc_coverage_start"]
+
+# FEMA's causeOfDamage code for pluvial (rain-driven) claims — see
+# docs/methods.md for why this code is used as a proxy, not a clean label.
+# Shared here so triangulate_claims.py's --cause-of-damage filter and
+# build_aorc_pixel_day_index.py's pluvial-only restriction can't drift
+# out of sync with each other.
+PLUVIAL_CAUSE_CODE = "4"
 
 # Raw / interim / processed file names, referenced by multiple pipeline steps.
 RAW_CLAIMS_PARQUET = RAW_DIR / "FimaNfipClaims.parquet"
