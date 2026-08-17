@@ -94,6 +94,33 @@ def load_zcta_geometry(glob_pattern, field) -> dict:
     return geoms
 
 
+def load_block_group_geometry(glob_pattern) -> dict:
+    """Code -> polygon for a GEOID/GEO_ID-bearing block-group vintage
+    (1990/2010/2020) — the geometry-preserving counterpart to load_geoids."""
+    geoms = {}
+    for f in glob.glob(str(SHAPEFILE_ROOT / glob_pattern)):
+        columns = gpd.read_file(f, rows=0).columns
+        gdf = gpd.read_file(f)
+        if "GEOID" in columns:
+            geoms.update(zip(gdf["GEOID"], gdf.geometry))
+        elif "GEO_ID" in columns:
+            geoms.update(zip(gdf["GEO_ID"].str[-12:], gdf.geometry))
+        else:
+            raise KeyError(f"{f}: no GEOID or GEO_ID column found ({list(columns)})")
+    return geoms
+
+
+def load_block_group_2000_vintage_geometry() -> dict:
+    """Code -> polygon for the 2000 vintage — the geometry-preserving
+    counterpart to load_block_group_2000_vintage."""
+    geoms = {}
+    for f in glob.glob(str(SHAPEFILE_ROOT / "bg*_d00_shp.zip")):
+        gdf = gpd.read_file(f, columns=["STATE", "COUNTY", "TRACT", "BLKGROUP"])
+        geoid = gdf["STATE"] + gdf["COUNTY"] + gdf["TRACT"].str.zfill(6) + gdf["BLKGROUP"]
+        geoms.update(zip(geoid, gdf.geometry))
+    return geoms
+
+
 def derive_tract_vintages(bg_vintages: dict) -> dict:
     """Tract GEOID = first 11 characters of a block-group GEOID.
 
@@ -115,17 +142,19 @@ def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = 0.05):
     return box(lon - buffer_degrees, lat - buffer_degrees, lon + buffer_degrees, lat + buffer_degrees)
 
 
-def zcta_spatial_validation_by_year(claims: pd.DataFrame, zcta_geoms: dict) -> pd.DataFrame:
-    """For each year and ZCTA vintage: of the claims whose ZIP code *matches*
-    that vintage's ZCTA list, what fraction also spatially validate — the
-    matched ZCTA's actual polygon overlaps the claim's lat/lon box (see
+def spatial_validation_by_year(claims: pd.DataFrame, code_col: str, geoms_by_vintage: dict) -> pd.DataFrame:
+    """For each year and vintage: of the claims whose code_col value
+    *matches* that vintage's GEOID/ZCTA list, what fraction also spatially
+    validate — the matched polygon overlaps the claim's lat/lon box (see
     triangulate_claims.py's select_validated_geometry). A code match alone
     doesn't guarantee the polygon is anywhere near the claim; this is the
     same spatial check the real pipeline applies, broken out by year here.
+    Used for both censusBlockGroupFips and reportedZipCode — callers
+    should pre-filter claims (e.g. to real 5-digit ZIPs) as needed.
     """
-    df = claims[["yearOfLoss", "reportedZipCode", "latitude", "longitude"]].copy()
-    df = df[df["reportedZipCode"].str.len() == 5]
-    df = df.dropna(subset=["yearOfLoss", "latitude", "longitude"])
+    df = claims[["yearOfLoss", code_col, "latitude", "longitude"]].dropna(
+        subset=["yearOfLoss", code_col, "latitude", "longitude"]
+    )
     boxes = gpd.GeoSeries(
         [create_lat_lon_rect(lat, lon) for lat, lon in zip(df["latitude"], df["longitude"])],
         index=df.index,
@@ -133,8 +162,8 @@ def zcta_spatial_validation_by_year(claims: pd.DataFrame, zcta_geoms: dict) -> p
     )
 
     per_vintage = {}
-    for label, geom_by_code in zcta_geoms.items():
-        matched_geom = df["reportedZipCode"].map(geom_by_code)
+    for label, geom_by_code in geoms_by_vintage.items():
+        matched_geom = df[code_col].map(geom_by_code)
         is_matched = matched_geom.notna()
 
         validated = pd.Series(False, index=df.index)
@@ -265,6 +294,21 @@ def main():
     print(bg_table.to_string())
     print(f"\nWrote {bg_out}")
 
+    print("\nLoading candidate block-group vintages WITH geometry (for spatial validation)...")
+    bg_geoms = {
+        "1990": load_block_group_geometry("bg*_d90_shp.zip"),
+        "2000": load_block_group_2000_vintage_geometry(),
+        "2010": load_block_group_geometry("gz_2010_*_150_00_500k.zip"),
+        "2020": load_block_group_geometry("cb_2020_*_bg_500k.zip"),
+    }
+    print("\nComputing block-group match rate vs. spatial-validation rate by year "
+          "(of the matches, what fraction also overlap the claim's lat/lon box)...")
+    bg_validation_table = spatial_validation_by_year(claims, "censusBlockGroupFips", bg_geoms)
+    bg_validation_out = INTERIM_DIR / f"vintage_hit_rate_block_group_spatial_validation{suffix}.csv"
+    bg_validation_table.to_csv(bg_validation_out)
+    print(bg_validation_table.to_string())
+    print(f"\nWrote {bg_validation_out}")
+
     print("\nComputing census tract hit rate by year (tract = block-group GEOID[:11])...")
     tract_table = hit_rate_by_year(claims, "censusTract", tract_vintages)
     tract_out = INTERIM_DIR / f"vintage_hit_rate_by_year_tract{suffix}.csv"
@@ -288,7 +332,7 @@ def main():
     }
     print("\nComputing ZCTA match rate vs. spatial-validation rate by year "
           "(of the matches, what fraction also overlap the claim's lat/lon box)...")
-    zcta_validation_table = zcta_spatial_validation_by_year(claims, zcta_geoms)
+    zcta_validation_table = spatial_validation_by_year(zip_claims, "reportedZipCode", zcta_geoms)
     zcta_validation_out = INTERIM_DIR / f"vintage_hit_rate_zcta_spatial_validation{suffix}.csv"
     zcta_validation_table.to_csv(zcta_validation_out)
     print(zcta_validation_table.to_string())
