@@ -46,6 +46,11 @@ source URLs).
 src/run_pipeline.sh
 ```
 
+`run_pipeline.sh` itself takes no positional arguments, but forwards three
+optional flags to the relevant step (see Key flags below for what each
+does) — e.g. `src/run_pipeline.sh --min-hourly-precip-mm 10 --zcta-strategy
+closest`. Omitted flags fall through to that step's own default.
+
 restricted to pluvial claims (`causeOfDamage == "4"`) by default — that's
 a flag, not a hardcoded choice, see below. Or run steps individually —
 each reads its inputs from the previous step's output path
@@ -67,19 +72,26 @@ run yet (see `docs/methods.md`'s Known limitations).
 Several methodological choices in this pipeline are run-time flags
 rather than fixed answers, deliberately — see `docs/methods.md` for why
 each exists and the numbers behind the tradeoffs. Full list on any
-script via `--help`; the ones worth knowing about:
+script via `--help`; the ones worth knowing about (marked ✅ where
+`run_pipeline.sh` forwards them directly, so you don't need to call the
+individual step yourself):
 
-- `triangulate_claims.py --block-group-strategy` / `--zcta-strategy`
+- ✅ `triangulate_claims.py --block-group-strategy` / `--zcta-strategy`
   `{default,closest,most_recent,drop}` — which census boundary vintage a
-  claim's block-group/ZIP code is checked against.
+  claim's block-group/ZIP code is checked against. Shipped defaults
+  differ: block group defaults to `default` (the 2010/2020 decade rule),
+  ZIP defaults to `closest` — the `default` *strategy* (drop pre-2000,
+  most-recent post-2000) is still available via `--zcta-strategy default`,
+  it's just not what runs if you omit the flag. See `docs/methods.md`.
 - `triangulate_claims.py --cause-of-damage <code>` — restrict to a single
   `causeOfDamage` code (`run_pipeline.sh` passes `4` for pluvial).
-- `correct_pluvial_dates.py --min-hourly-precip-mm <value>` — override
+- ✅ `correct_pluvial_dates.py --min-hourly-precip-mm <value>` — override
   the uniform precipitation threshold for a single run.
 - `correct_pluvial_dates.py --threshold-netcdf <path>
   [--threshold-netcdf-var <name>]` — use a spatially-varying threshold
   from a NetCDF file instead of a constant; mutually exclusive with
-  `--min-hourly-precip-mm`.
+  `--min-hourly-precip-mm`. Not currently forwarded by `run_pipeline.sh`
+  — run `correct_pluvial_dates.py` directly for this one.
 
 ## Why the data isn't redistributed raw
 

@@ -78,7 +78,10 @@ GeometryByVintage = Dict[int, GeometryByCode]
 STRATEGIES = ["default", "closest", "most_recent", "drop"]
 
 
-def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = 0.05):
+LATLON_BOX_BUFFER_DEGREES = 0.05  # 0.05 each side -> a 0.1-degree box; shared with main()'s bulk area computation
+
+
+def create_lat_lon_rect(lat: float, lon: float, buffer_degrees: float = LATLON_BOX_BUFFER_DEGREES):
     """Rectangular box around a lat/lon point, in WGS84 (EPSG:4326).
 
     buffer_degrees=0.05 gives a 0.1-degree box, matching FEMA's stated
@@ -301,7 +304,10 @@ def main():
     parser.add_argument("--input", default=str(INFLATION_ADJUSTED_PARQUET))
     parser.add_argument("--output", default=str(TRIANGULATED_PARQUET))
     parser.add_argument("--block-group-strategy", choices=STRATEGIES, default="default")
-    parser.add_argument("--zcta-strategy", choices=STRATEGIES, default="default")
+    # Shipped default is "closest", not the "default" strategy — see docs/methods.md.
+    # The "default" strategy (drop pre-2000, most-recent post-2000) is still available
+    # via --zcta-strategy default for anyone who wants that specific rule.
+    parser.add_argument("--zcta-strategy", choices=STRATEGIES, default="closest")
     parser.add_argument(
         "--cause-of-damage",
         default=None,
@@ -376,6 +382,31 @@ def main():
     print("\nZIP match status breakdown:")
     print(claims_df["zip_match_status"].value_counts())
 
+    # Area (m^2, EPSG:5070 is equal-area so this is exact physical area) of the
+    # 0.1-degree lat/lon box itself at each claim's location -- the same box
+    # create_lat_lon_rect builds per-row above, but built vectorized here
+    # (shapely.box accepts array input) since a second per-row apply over
+    # 1.15M rows would just re-pay triangulate_geometry's cost for no reason.
+    # This is the strict upper bound on that claim's final intersected area
+    # (see module docstring), so (1 - geometry.area / latlon_box_area_m2) is
+    # the fraction the other sources shrank the box by.
+    print("\nComputing 0.1-degree lat/lon box area (m^2) at each claim's location...")
+    has_latlon = claims_df["latitude"].notna() & claims_df["longitude"].notna()
+    box_geoms = shapely.box(
+        claims_df.loc[has_latlon, "longitude"].to_numpy() - LATLON_BOX_BUFFER_DEGREES,
+        claims_df.loc[has_latlon, "latitude"].to_numpy() - LATLON_BOX_BUFFER_DEGREES,
+        claims_df.loc[has_latlon, "longitude"].to_numpy() + LATLON_BOX_BUFFER_DEGREES,
+        claims_df.loc[has_latlon, "latitude"].to_numpy() + LATLON_BOX_BUFFER_DEGREES,
+    )
+    box_areas_m2 = (
+        gpd.GeoSeries(box_geoms, crs="EPSG:4326", index=claims_df.index[has_latlon])
+        .to_crs("EPSG:5070")
+        .area
+    )
+    claims_df["latlon_box_area_m2"] = pd.NA
+    claims_df.loc[has_latlon, "latlon_box_area_m2"] = box_areas_m2
+    claims_df["latlon_box_area_m2"] = claims_df["latlon_box_area_m2"].astype(float)
+
     has_geometry = claims_df["geometry"].notna() & ~claims_df["geometry_is_empty"].fillna(True)
     claims_gdf = (
         gpd.GeoDataFrame(claims_df[has_geometry], geometry="geometry")
@@ -385,6 +416,8 @@ def main():
 
     print(f"\nMean claim area:   {claims_gdf.geometry.area.mean() / 1e6:.3f} km^2")
     print(f"Median claim area: {claims_gdf.geometry.area.median() / 1e6:.3f} km^2")
+    pct_reduction = 1 - claims_gdf.geometry.area / claims_gdf["latlon_box_area_m2"]
+    print(f"Mean/median area reduction vs. the 0.1-degree box: {pct_reduction.mean():.1%} / {pct_reduction.median():.1%}")
 
     claims_gdf.to_parquet(args.output)
     print(f"\nWrote {len(claims_gdf):,} rows to {args.output}")

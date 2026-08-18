@@ -114,22 +114,39 @@ without changing anything else.
   loss year.
 - **`drop`** — never use that source at all, for either geography.
 
+The shipped defaults differ by geography — `--block-group-strategy`
+defaults to `default`, `--zcta-strategy` defaults to `closest` — because
+the tradeoff each strategy makes lands differently for the two sources
+(see below for why). The `default` *strategy* still exists and is fully
+usable for ZIP via `--zcta-strategy default`; it just isn't what runs if
+the flag is omitted.
+
 A per-claim membership test against every available shapefile release
 (`closest`, roughly) recovers more matches than the `default` decade rule
 for block group, since the transition between releases is gradual rather
 than sharp — prototyped and confirmed to recover matches `default` misses
-in every decade. `default` is still the shipped default because it's a
-tradeoff worth making deliberately, not avoiding: an explicit two-vintage
-cutover can be stated and audited in one sentence ("pre-2020 claims use
-the 2010 Census block-group release, 2020-on claims use the 2020
-release"), whereas per-claim membership testing requires justifying a
-data-driven selection with no documented counterpart in FEMA's own
-process. The measured cost is that testing both the 2010 and 2020
-releases per claim (`closest`/`most_recent` would each get most of the
-way there) recovers approximately 88,000 additional CONUS claims (3.4%)
-that match only the release `default` doesn't assign to their era —
-`--block-group-strategy closest` is there specifically to quantify or
+in every decade. For block group, `default` is the shipped default anyway
+because it's a tradeoff worth making deliberately, not avoiding: an
+explicit two-vintage cutover can be stated and audited in one sentence
+("pre-2020 claims use the 2010 Census block-group release, 2020-on claims
+use the 2020 release"), whereas per-claim membership testing requires
+justifying a data-driven selection with no documented counterpart in
+FEMA's own process. The measured cost is that testing both the 2010 and
+2020 releases per claim (`closest`/`most_recent` would each get most of
+the way there) recovers approximately 88,000 additional CONUS claims
+(3.4%) that match only the release `default` doesn't assign to their era
+— `--block-group-strategy closest` is there specifically to quantify or
 recover that gap when it matters more than auditability does.
+
+For ZIP, that auditability argument is much weaker, which is why
+`closest` ships as the default there instead: `default`'s own rule (drop
+below 2000, most-recent above it) is already less auditable than block
+group's two-vintage cutover — it's two different behaviors stitched
+together at a threshold, not one clean sentence — and `closest` recovers
+the pre-2000 claims that rule drops entirely (see below) for a
+comparably-small cost, since ZCTA-vintage choice barely affects match
+rate to begin with.
+
 `block_group_vintage_used` / `zip_vintage_used` (see
 `docs/data_dictionary.md`) record which vintage year was actually applied
 to each claim, and `block_group_match_status` / `zip_match_status` record
@@ -170,21 +187,25 @@ historical boundary needs. Unlike `censusBlockGroupFips` and
 service assigns. Per FEMA's own data dictionary it is raw data "as
 reported by WYO partners," so the retroactive-geocoding rationale used
 for the block-group vintage above does not apply to ZIP-vintage
-selection — which is exactly why `default`'s ZIP rule is a hard drop
-below 2000 rather than borrowing a later vintage the way block group
-does. `closest` and `most_recent` don't observe that gate (they'll check
-even a 1978 claim's ZIP against the 2020 ZCTA if selected), which is
-deliberate: they exist to probe the alternative, not to be "more
-correct" than `default`.
+selection — which is exactly why the `default` *strategy*'s ZIP rule is a
+hard drop below 2000 rather than borrowing a later vintage the way block
+group does. `closest` (the shipped default) doesn't observe that gate —
+it'll check even a 1978 claim's ZIP against whichever configured vintage
+is numerically nearest — which recovers real matches for pre-2000 claims
+that `default` would drop outright, at negligible cost (see below).
+`most_recent` also doesn't observe the gate, for the same reason.
 
 Unlike the block-group case, ZCTA-vintage choice has little effect on
 match rate: testing `reportedZipCode` against the 2000, 2010, and 2020
 ZCTA releases shows all three track each other closely within any given
-decade, and `default`'s post-2000 rule (always the most-recent vintage)
-loses only on the order of a couple thousand claims relative to testing
-all three — negligible relative to the block-group tradeoff above. This
-is also why `default`'s ZIP rule doesn't need block group's two-vintage
-cutover machinery: with vintage choice mattering this little, "always use
+decade, and the `default` strategy's post-2000 rule (always the
+most-recent vintage) loses only on the order of a couple thousand claims
+relative to testing all three — negligible relative to the block-group
+tradeoff above, and part of why shipping `closest` as ZIP's default was a
+safe call: with vintage choice mattering this little, there's little risk
+in also picking up the pre-2000 claims `default` drops. This is also why
+`default`'s own ZIP rule doesn't need block group's two-vintage cutover
+machinery: with vintage choice mattering this little, "always use
 whichever configured vintage is newest" already captures nearly all the
 achievable coverage, whereas an earlier version of this pipeline instead
 gave each decade its own contemporaneous release (e.g. 2000s claims used
@@ -195,6 +216,34 @@ claims is that a substantial share of `reportedZipCode` values are empty
 strings — frequently paired with `state == "UN"` (unknown) — rather than
 real ZIP codes that failed to match a ZCTA. This is a data-completeness
 gap in the source records, not a boundary-matching problem.
+
+Match rate is one thing; spatial-*validation* rate (of the claims whose
+code matches a vintage's GEOID list, what fraction of those matches also
+overlap the claim's lat/lon box) is another, and there the 2000 ZCTA
+vintage was a real outlier: 86.5% mean validated rate vs. ~99.1% for both
+2010 and 2020 (a ~12.6pt gap), which propagates directly into
+`geometry_is_empty` drops for pre-2005 claims (`closest`, the shipped ZIP
+strategy, picks the 2000 vintage for every claim before 2005 — see
+`vintage_for_strategy`). Two candidate explanations were tested against
+each other rather than assumed: (1) the 2000 vintage's *boundaries*
+genuinely differ from 2010's (real ZCTA redefinition between census
+decades — ZCTAs are redrawn each census from population-weighted ZIP-code
+centroids, not just redigitized), or (2) the specific *file* used for the
+2000 vintage was simply lower-resolution. The 2000 vintage as originally
+configured here was Census's PREVGENZ `z500shp` release
+(`zt{state}_d00_shp.zip`), a 500k-scale cartographic generalization —
+median 58 vertices per ZCTA polygon. Re-running the same validation check
+against `tl_2009_us_zcta500.zip` (TIGER/Line, full resolution, median
+1,198 vertices per ZCTA, `ZCTA5CE00` field) — the *same* 2000-census ZCTA
+delineation, just not generalized — closed the entire gap: 99.1% mean
+validated rate, statistically indistinguishable from 2010/2020. So
+explanation (2) accounts for essentially all of it; the boundaries
+weren't meaningfully wrong, the PREVGENZ file was just too coarse to
+validate correctly against a 0.1-degree lat/lon box. `config.yaml`'s
+`zcta_vintages.2000` now points at the TIGER/Line file for exactly this
+reason; `vintage_hit_rate_table.py` keeps the original PREVGENZ source
+loaded separately (`2000_prevgenz`) as the permanent before/after record
+of this finding.
 
 A claim's three location sources can each individually pass validation
 against the lat/lon box while failing to overlap one another — for
@@ -309,8 +358,10 @@ reduction is printed at run time.
   the residual's size suggests it should.
 - `causeOfDamage == "4"` is a coarse proxy for "pluvial," not a clean
   label (see Step 3).
-- Pre-2000 triangulation cannot use a ZCTA boundary under the `default`
-  strategy (see Step 2).
+- The `default` *strategy* (not the shipped default for ZIP, which is
+  `closest` — see Step 2) cannot use a ZCTA boundary before 2000. `closest`
+  and `most_recent` don't have this limitation, and check pre-2000 claims
+  against whichever configured ZCTA vintage applies under their own rule.
 - Pre-1979 claims are not eligible for pluvial date correction, since
   AORC coverage begins in 1979 (see Step 3).
 - The precip threshold is spatially uniform by default

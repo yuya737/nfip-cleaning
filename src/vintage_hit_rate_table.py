@@ -38,9 +38,16 @@ Candidate block-group vintages (all official Census releases):
   2020  Modern cb_2020_{state}_bg_500k.zip, GEOID field directly.
 
 Candidate ZCTA vintages:
-  2000  PREVGENZ z500shp (zt{state}_d00_shp.zip), ZCTA field.
+  2000  tl_2009_us_zcta500.zip, ZCTA5CE00 field -- full TIGER/Line
+        resolution (median 1,198 vertices/ZCTA). Matches config.yaml's
+        real "2000" vintage. (Originally PREVGENZ z500shp,
+        zt{state}_d00_shp.zip -- same 2000-census ZCTA delineation but
+        500k-scale generalized to a median 58 vertices/ZCTA, which cost
+        ~12.6pts of spatial-validation rate for no reason tied to the
+        actual ZIP boundaries; see docs/methods.md. Superseded here, not
+        kept for comparison.)
   2010  cb_2019_us_zcta510_500k.zip, ZCTA5CE10 field.
-  2020  cb_2020_us_zcta520_500k.zip, ZCTA5CE20 field.
+  2020           cb_2020_us_zcta520_500k.zip, ZCTA5CE20 field.
 """
 
 import argparse
@@ -326,7 +333,12 @@ def main():
 
     print("\nLoading candidate ZCTA vintages WITH geometry (for spatial validation)...")
     zcta_geoms = {
-        "2000": load_zcta_geometry("zt*_d00_shp.zip", "ZCTA"),
+        # config.yaml's "2000" vintage as of the PREVGENZ-to-TIGER switch --
+        # full TIGER/Line resolution (median 1,198 vertices/ZCTA), not
+        # PREVGENZ's 500k-scale generalization (median 58 -- that alone cost
+        # ~12.6pts of spatial-validation rate for no reason tied to the
+        # actual ZIP boundaries; see docs/methods.md for the before/after).
+        "2000": load_zcta_geometry("tl_2009_us_zcta500.zip", "ZCTA5CE00"),
         "2010": load_zcta_geometry("cb_2019_us_zcta510_500k.zip", "ZCTA5CE10"),
         "2020": load_zcta_geometry("cb_2020_us_zcta520_500k.zip", "ZCTA5CE20"),
     }

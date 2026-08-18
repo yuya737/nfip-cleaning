@@ -17,7 +17,11 @@ dependencies:
   - s3fs
   - fsspec
   - dask
+  - scipy
+  - esda
+  - libpysal
   - pip
   - pip:
       - fastparquet
       - timezonefinder
+      - pot
