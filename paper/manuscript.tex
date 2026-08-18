@@ -571,10 +571,6 @@ are as follows.
 \texttt{latitude} / \texttt{longitude} fields remain in WGS84
 (EPSG:4326) degrees, unchanged.
 
-\section*{Data Overview}
-
-TBD
-
 \section*{Technical Validation}
 
 \subsection*{Boundary-release assignment}
@@ -902,6 +898,52 @@ precipitation threshold swept (2.5, 5, 10, 15, and 20 mm).}
 
 \input{tables/day_shift_histogram.tex}
 
+\section*{Usage Notes}
+
+The full pipeline is run via \texttt{src/run\_pipeline.sh} in the code
+repository, which executes the following six ordered scripts. Each
+script reads its inputs from the previous step's output path, so once
+those outputs exist any single step can be re-run on its own without
+repeating the full pipeline.
+
+\begin{enumerate}
+  \item \texttt{download\_claims.py} --- fetches the raw FEMA claims
+    extract and the FRED inflation series.
+  \item \texttt{adjust\_inflation.py} --- Stage 1, inflation adjustment.
+  \item \texttt{triangulate\_claims.py} --- Stage 2, spatial
+    triangulation.
+  \item \texttt{build\_aorc\_pixel\_day\_index.py} --- indexes the AORC
+    pixel/days needed for pluvial claims.
+  \item \texttt{fetch\_aorc\_daily\_max.py} --- fetches the corresponding
+    AORC precipitation.
+  \item \texttt{correct\_pluvial\_dates.py} --- Stage 3, pluvial date
+    correction.
+\end{enumerate}
+
+\texttt{run\_pipeline.sh} restricts the run to pluvial claims
+(\texttt{causeOfDamage == "4"}) by default, matching this dataset's
+release, but this is a run-time flag rather than a hardcoded choice.
+The methodological parameters described in Methods are all exposed as
+command-line flags.
+
+\begin{itemize}
+  \item \texttt{triangulate\_claims.py --block-group-strategy} /
+    \texttt{--zcta-strategy} --- the block-group/ZCTA boundary-release
+    strategy (\texttt{default}, \texttt{closest}, \texttt{most\_recent},
+    or \texttt{drop}).
+  \item \texttt{triangulate\_claims.py --cause-of-damage} --- the
+    \texttt{causeOfDamage} filter (\texttt{run\_pipeline.sh} passes
+    \texttt{4} for pluvial).
+  \item \texttt{correct\_pluvial\_dates.py --min-hourly-precip-mm} ---
+    the constant precipitation threshold.
+  \item \texttt{correct\_pluvial\_dates.py --threshold-netcdf} ---
+    a spatially varying threshold from a NetCDF file, in place of a
+    constant.
+\end{itemize}
+
+Census block-group and ZCTA shapefiles must be downloaded separately
+and pointed to via \texttt{config.yaml}, while the FEMA, FRED, and
+AORC inputs are fetched automatically.
 
 
 \section*{Data Availability}
