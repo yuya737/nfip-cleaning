@@ -7,11 +7,12 @@ Threshold (mm) & accepted as reported & corrected & no qualifying precip in wind
 \midrule
 2.5 & 81.0\% & 14.3\% & 2.5\% & 2.1\% \\
 5 & 73.9\% & 17.2\% & 6.7\% & 2.1\% \\
+\rowcolor{gray!15}7.62\textsuperscript{*} & 66.3\% & 18.3\% & 13.2\% & 2.1\% \\
 10 & 59.1\% & 19.4\% & 19.4\% & 2.1\% \\
 15 & 46.0\% & 19.3\% & 32.5\% & 2.1\% \\
 20 & 36.6\% & 17.8\% & 43.4\% & 2.1\% \\
 \bottomrule
 \end{tabular}
-\caption{\texttt{pluvialCorrectionStatus} share of the released file's 1,149,288 claims, swept over five constant precipitation thresholds. Columns correspond to \texttt{accepted\_as\_reported}, \texttt{corrected}, \texttt{no\_qualifying\_precip\_in\_window}, and, combined, \texttt{no\_aorc\_data\_in\_window} with the threshold-invariant \texttt{before\_aorc\_coverage}. Table~\ref{tab:pluvial-correction-status} gives the full $n$ claims breakdown at the default 5.0 mm threshold.}
+\caption{\texttt{pluvialCorrectionStatus} share of the released file's 1,149,288 claims, swept over six constant precipitation thresholds. Columns correspond to \texttt{accepted\_as\_reported}, \texttt{corrected}, \texttt{no\_qualifying\_precip\_in\_window}, and, combined, \texttt{no\_aorc\_data\_in\_window} with the threshold-invariant \texttt{before\_aorc\_coverage}. \textsuperscript{*}7.62 mm (shaded) is the released default. Table~\ref{tab:pluvial-correction-status} gives the full $n$ claims breakdown at this default threshold.}
 \label{tab:threshold-sweep}
 \end{table}

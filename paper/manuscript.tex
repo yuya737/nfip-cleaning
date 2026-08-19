@@ -12,6 +12,32 @@
   year         = {2026},
   url          = {https://stlouisfed.org},
 }
+@misc{ams_glossary_rain,
+  author       = {{American Meteorological Society}},
+  title        = {Rain},
+  howpublished = {Glossary of Meteorology, \url{https://glossary.ametsoc.org/wiki/Rain}},
+  year         = {2012},
+}
+
+@article{guerreiro_pluvial_2017,
+	title = {Pluvial {Flooding} in {European} {Cities}—{A} {Continental} {Approach} to {Urban} {Flood} {Modelling}},
+	volume = {9},
+	copyright = {http://creativecommons.org/licenses/by/3.0/},
+	issn = {2073-4441},
+	url = {https://www.mdpi.com/2073-4441/9/4/296},
+	doi = {10.3390/w9040296},
+	abstract = {Pluvial flooding is caused by localized intense rainfall and the flood models used to assess it are normally applied on a city (or part of a city) scale using local rainfall records and a high resolution digital elevation model (DEM). Here, we attempt to model pluvial flooding on a continental scale and calculate the percentage of area flooded for all European cities for a 10-year return period for hourly rainfall (RP10). Difficulties in obtaining hourly rainfall records compromise the estimation of each city RP10 and the Europe-wide DEM spatial resolution is low relative to those typically used for individual case-studies. Nevertheless, the modelling capabilities and necessary computing power make this type of continental study now possible. This is a first attempt at continental city flooding modelling and our methodology was designed so that our results can easily be updated as better/more data becomes available. The results for each city depend on the interplay of rainfall intensity, the elevation map of the city and the flow paths that are created. In general, cities with lower percentage of city flooded are in the north and west coastal areas of Europe, while the higher percentages are seen in continental and Mediterranean areas.},
+	language = {en},
+	number = {4},
+	urldate = {2026-08-18},
+	journal = {Water},
+	publisher = {Multidisciplinary Digital Publishing Institute},
+	author = {Guerreiro, Selma B. and Glenis, Vassilis and Dawson, Richard J. and Kilsby, Chris},
+	month = apr,
+	year = {2017},
+	keywords = {city flooding, Europe, pluvial flooding, urban flooding},
+	pages = {296},
+}
 
 
 @article{salas_learning_2023,
@@ -226,7 +252,7 @@ year = {2023}
 
 \end{filecontents*}
 
-\documentclass[7pt]{article}
+\documentclass[8pt]{article}
 
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath}
@@ -446,7 +472,7 @@ ZIP is matched to whichever configured ZCTA release is numerically
 closest to the loss year, including loss years before 2000, where the
 2000 release is the closest available (See \emph{Technical Validation}).
 
-Once a \emph{release} is selected, or unselected in the case of \texttt{drop}, we compute the spatial intersection of the boundaries (i.e. claim polygon = $\cap_{i}^{\text{n\_sources}} \text{polygon}_i$).
+Once a \emph{release} is selected, or unselected in the case of \texttt{drop}, we compute the spatial intersection of the boundaries (i.e. claim polygon = $\bigcap_{i=1}^{n} \text{polygon}_i$, where $n$ is the number of contributing sources).
 %
 In the worst case, we fall back to the $0.1 \times 0.1$ degree box defined by the rounded latitude/longitude, but in almost all cases the intersection of the three sources is a substantially smaller polygon.
 %
@@ -457,10 +483,28 @@ Our achieved spatial refinement is, however, not uniform in space and significan
 For each claim coded \texttt{causeOfDamage == "4"}, the reported
 \texttt{dateOfLoss} is checked against whether it coincides with a day
 of meaningful precipitation (maximum hourly precipitation exceeding a
-threshold, default 5.0 mm) at the claim's triangulated location.
-We refer to the NOAA AORC hourly accumulated precipitation product for reference.
+threshold, default 7.62 mm) at the claim's triangulated location.
+Peak hourly intensity, rather than daily-accumulated rainfall, is used
+as the criterion because pluvial flooding is characteristically caused
+by localized, intense rainfall and is conventionally assessed using
+local hourly rainfall records~\cite{guerreiro_pluvial_2017}. Pluvial
+flooding occurs when rainfall exceeds local drainage capacity within
+the short time it takes runoff to reach a drain or low point, so its
+risk is governed by short-duration rainfall intensity rather than by
+rainfall accumulated over a full day.
+
+To define this threshold, we refer to the NOAA AORC hourly accumulated precipitation product.
 %
-If the location's does not exceed the defined threshold, a window of nearby days (default $\pm$7) is searched for the day with the daily maximum hourly accumulated precipitation, and if that day clears the threshold it is treated as the corrected date. 
+If the reported date's precipitation does not exceed the defined threshold, a window of nearby days (default $\pm$7) is searched for the day with the daily maximum hourly accumulated precipitation, and if that day clears the threshold it is treated as the corrected date.
+%
+Within the window, the corrected date is chosen as the day with the
+greatest precipitation rather than the day nearest the reported date.
+This follows from a monotonic prior between precipitation intensity
+and pluvial flood risk. Among the days in the window that clear the qualifying
+threshold, the day with the highest precipitation is taken as the most
+probable candidate for the claim's true flood-triggering event,
+independent of which candidate day is closer in time to the reported
+date.
 %
 The original \texttt{dateOfLoss} is never overwritten. The corrected value and an explicit status code are added as new columns, letting downstream users decide whether to apply
 the correction.
@@ -473,7 +517,10 @@ A spatial field may be useful, as there is no principled reason a claim in an ar
 
 \begin{itemize}
   \item \textbf{Constant} --- the default, a single value applied
-    everywhere. The script defaults to 5.0 mm but this is configurable at run time.
+    everywhere. The script defaults to 7.62 mm (0.30 in), the threshold
+    the American Meteorological Society's Glossary of Meteorology uses
+    to define \emph{heavy} rainfall intensity~\cite{ams_glossary_rain},
+    but this is configurable at run time.
   \item \textbf{Spatial field} --- a user-supplied NetCDF raster
     sampled at each claim's exact location, giving a spatially varying
     threshold without requiring the raster to share AORC's grid or
@@ -522,15 +569,10 @@ are as follows.
     intersection of whichever of \{block-group boundary, ZCTA boundary,
     latitude/longitude box\} were available and spatially validated for the claim.
     Claims with zero contributing sources, or whose sources fail to
-    overlap one another (see \texttt{geometry\_is\_empty} below), are
-    excluded from the released file.
-  \item \texttt{n\_geometry\_sources} (0--3) and
+    overlap one another, are excluded from the released file.
+  \item \texttt{n\_geometry\_sources} (1--3) and
     \texttt{geometry\_sources} (e.g. \texttt{"block\_group+zip+latlon"})
     --- record which sources contributed.
-  \item \texttt{geometry\_is\_empty} --- true when a claim's sources
-    each individually validated against the reported latitude/longitude but do not
-    overlap one another. Such claims are dropped before the released
-    file is written, and the column is retained for downstream QA.
   \item \texttt{block\_group\_vintage\_used} and
     \texttt{zip\_vintage\_used} --- the boundary-release year (e.g.\
     1990, 2000, 2010, or 2020) selected for the claim by the
@@ -562,7 +604,7 @@ are as follows.
     reported \texttt{dateOfLoss}, before any correction. This is the
     value checked against the threshold to decide whether correction is
     attempted at all.
-  \item \texttt{pluvialCorrectionMaxPrecipMm} --- the maximum daily
+  \item \texttt{pluvialCorrectionMaxPrecipMm} --- the maximum hourly
     precipitation (mm) found at the claim's location on the date
     \texttt{correctedDateOfLoss} refers to.
 \end{itemize}
@@ -634,8 +676,8 @@ for block group, which is why \texttt{default} uses a single cutover
 year (2020) rather than a historical loss-year rule.
 
 Table~\ref{tab:block-group-match-status} gives the full
-\texttt{block\_group\_match\_status} breakdown across the release 
-file's full pluvial CONUS population using the \texttt{default} strategy. 
+\texttt{block\_group\_match\_status} breakdown across the released
+file's full pluvial CONUS population using the \texttt{default} strategy.
 
 \begin{table}[H]
 \centering
@@ -690,9 +732,9 @@ the near-flat match rates observed across all three ZCTA releases.
 Furthermore, the \texttt{closest} strategy aligns with existing work
 that joins NFIP claims to external sources (e.g.\ the American
 Community Survey)~\cite{cano_pecharroman_exposing_2024,
-crespo_flood_2019} and thus elect this strategy as the default for ZCTA.
+crespo_flood_2019} and thus we elect this strategy as the default for ZCTA.
 
-However, as with \texttt{block\_group\_strategy},the  \texttt{zcta\_strategy} parameter remains configurable.
+However, as with \texttt{block\_group\_strategy}, the \texttt{zcta\_strategy} parameter remains configurable.
 
 Table~\ref{tab:zip-match-status} gives the full \texttt{zip\_match\_status}
 breakdown across the released file's full pluvial CONUS population under the \texttt{default} strategy. 
@@ -742,23 +784,23 @@ triangulated polygon, across the released file's 1,149,288 claims.}
 
 Figure~\ref{fig:polygon-area-histogram} (top) and
 Table~\ref{tab:polygon-area-histogram} show the resulting distribution
-of triangulated \texttt{polygon\_area}. 909,180 claims (79.2\% of the
-1,148,274 claims falling within the 0--115 km$^2$ range shown) resolve
-to a polygon of 5 km$^2$ or smaller, and the distribution is
-heavily right-skewed, with claim counts falling off sharply past
-20 km$^2$. 1,014 claims (0.09\%) fall outside this range. The median
-triangulated polygon area is 1.17 km$^2$, and the mean is 5.21 km$^2$,
-pulled well above the median by this right tail.
+of triangulated \texttt{polygon\_area} across the released file's full
+1,149,288 claims, all of which fall within the 0--115 km$^2$ range
+shown. 910,194 claims (79.2\%) resolve to a polygon of 5 km$^2$ or
+smaller, and the distribution is heavily right-skewed, with claim
+counts falling off sharply past 20 km$^2$. The median triangulated
+polygon area is 1.17 km$^2$, and the mean is 5.21 km$^2$, pulled well
+above the median by this right tail.
 
 Figure~\ref{fig:polygon-area-histogram} (bottom) and
 Table~\ref{tab:area-reduction-histogram} show, for each claim, how the
 final triangulated \texttt{polygon\_area} compares to the area of the
 0.1$^\circ$$\times$0.1$^\circ$ lat/lon box source, computed as
 $1 - (\texttt{polygon\_area} / \text{lat-lon box area})$ and expressed
-as a percentage. Across the 1,148,432 claims with a defined lat/lon box
-source, 885,512 (77.1\%) show a reduction of at least 95.8\%, and the
-distribution is heavily left-skewed toward this upper end. The mean
-reduction is 94.9\%, and the median is 98.9\%.
+as a percentage. Across the released file's 1,149,288 claims, 923,947
+(80.4\%) show a reduction of at least 94.7\%, and the distribution is
+heavily left-skewed toward this upper end. The mean reduction is
+94.9\%, and the median is 98.9\%.
 
 \begin{figure}[H]
 \centering
@@ -781,7 +823,7 @@ lat/lon box source area and the final triangulated
 
 \textbf{Date-correction outcomes.} Table~\ref{tab:pluvial-correction-status}
 gives the full \texttt{pluvialCorrectionStatus} breakdown across the
-released file's 1,149,288 claims, under the default 5.0 mm constant
+released file's 1,149,288 claims, under the default 7.62 mm constant
 precipitation threshold. \texttt{no\_aorc\_data\_in\_window} arises,
 for example, when a claim sits on a small land mass whose four
 surrounding AORC grid points for bilinear interpolation are all ocean
@@ -792,18 +834,33 @@ Figure~\ref{fig:precip-histogram} and
 Table~\ref{tab:precip-histogram} show the distribution of
 \texttt{reportedDateMaxPrecipMm}, the maximum hourly precipitation at
 each pluvial claim's triangulated location on the reported
-\texttt{dateOfLoss}, before any correction is applied. Of the
-1,037,422 claims evaluated for date correction, 187,805 (18.1\%) fall
-at or below the 5.0 mm default threshold, the population eligible to
-have their date corrected under the default constant threshold.
+\texttt{dateOfLoss}, before any correction is applied. This value is
+populated only when AORC has valid data on that specific date, a
+narrower condition than the one \texttt{pluvialCorrectionStatus} is
+decided under, which instead uses the best precipitation found
+anywhere across the full $\pm$7-day search window. A claim can
+therefore still be \texttt{corrected} or
+\texttt{no\_qualifying\_precip\_in\_window} even when AORC is missing
+data on the reported date itself, so long as some other day in the
+window has data, leaving \texttt{reportedDateMaxPrecipMm} undefined
+for 111,866 of the released file's 1,149,288 claims. Of these, 12,425
+are \texttt{before\_aorc\_coverage} (never evaluated) and 12,201 are
+\texttt{no\_aorc\_data\_in\_window} (no day in the window has data, the
+reported date included), while the remaining 87,240 are
+\texttt{corrected} or \texttt{no\_qualifying\_precip\_in\_window}
+claims resolved from a different day in the window than the one
+missing data. Of the 1,037,422 claims with a defined
+\texttt{reportedDateMaxPrecipMm}, 275,139 (26.5\%) fall at or below
+the 7.62 mm default threshold, the population eligible to have their
+date corrected under the default constant threshold.
 
-Under the default uniform 5.0 mm threshold, 198,180 of 1,149,288 claims (17.2\%) have a
+Under the default uniform 7.62 mm threshold, 210,488 of 1,149,288 claims (18.3\%) have a
 \texttt{correctedDateOfLoss} that differs from the originally reported
 \texttt{dateOfLoss}. Figure~\ref{fig:threshold-sweep} and
 Table~\ref{tab:threshold-sweep} show how the full
 \texttt{pluvialCorrectionStatus} breakdown responds to the constant
-precipitation threshold, swept over five values (2.5, 5, 10, 15, and
-20 mm) with the search window otherwise unchanged. The
+precipitation threshold, swept over six values (2.5, 5, 7.62, 10, 15,
+and 20 mm) with the search window otherwise unchanged. The
 \texttt{corrected} share is not monotonic in the threshold. It rises
 from 14.3\% at 2.5 mm to a peak of 19.4\% at 10 mm, then falls to
 17.8\% at 20 mm, reflecting two opposing effects as the threshold
@@ -818,7 +875,7 @@ are each unaffected by the threshold and together account for a
 constant 2.1\% of claims across the sweep.
 
 Figure~\ref{fig:day-shift-histogram} and
-Table~\ref{tab:day-shift-histogram} show, for the same five
+Table~\ref{tab:day-shift-histogram} show, for the same six
 thresholds, the distribution of the resulting shift in
 \texttt{correctedDateOfLoss} away from the originally reported
 \texttt{dateOfLoss}. The figure covers \texttt{corrected} claims only,
@@ -847,15 +904,16 @@ the table.
 \toprule
 \texttt{pluvialCorrectionStatus} & $n$ claims & \% & Why \\
 \midrule
-\texttt{accepted\_as\_reported} & 849{,}618 & 73.93\% & Reported date already coincided with meaningful precipitation \\
-\texttt{corrected} & 198{,}180 & 17.24\% & A qualifying day was found within the search window \\
-\texttt{no\_qualifying\_precip\_in\_window} & 76{,}864 & 6.69\% & AORC data was available, but no day in the window cleared the threshold \\
+\texttt{accepted\_as\_reported} & 762{,}284 & 66.33\% & Reported date already coincided with meaningful precipitation \\
+\texttt{corrected} & 210{,}488 & 18.31\% & A qualifying day was found within the search window \\
+\texttt{no\_qualifying\_precip\_in\_window} & 151{,}890 & 13.22\% & AORC data was available, but no day in the window cleared the threshold \\
 \texttt{before\_aorc\_coverage} & 12{,}425 & 1.08\% & \texttt{dateOfLoss} predates AORC's 1979-02-01 start, never evaluated \\
 \texttt{no\_aorc\_data\_in\_window} & 12{,}201 & 1.06\% & Evaluated, but every hour of every day in the search window was missing from AORC \\
 \bottomrule
 \end{tabular}
 \caption{\texttt{pluvialCorrectionStatus} breakdown across the full
-released population. For \texttt{accepted\_as\_reported} and
+released population, under the default 7.62 mm constant precipitation
+threshold. For \texttt{accepted\_as\_reported} and
 \texttt{corrected}, \texttt{correctedDateOfLoss} reflects a day of
 qualifying precipitation. For the remaining statuses it equals the
 originally reported date, per its always-populated fallback behavior
@@ -866,8 +924,8 @@ described in Data Records.}
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.75\textwidth]{figures/precip_histogram.png}
-\caption{Distribution of \texttt{reportedDateMaxPrecipMm} across
-pluvial claims evaluated for date correction.}
+\caption{Distribution of \texttt{reportedDateMaxPrecipMm} across the
+1,037,422 pluvial claims with a defined \texttt{reportedDateMaxPrecipMm}.}
 \label{fig:precip-histogram}
 \end{figure}
 
@@ -877,8 +935,9 @@ pluvial claims evaluated for date correction.}
 \centering
 \includegraphics[width=0.75\textwidth]{figures/threshold_sweep.png}
 \caption{\texttt{pluvialCorrectionStatus} breakdown across the
-released file's claims, swept over five constant precipitation
-thresholds (2.5, 5, 10, 15, and 20 mm). \texttt{no\_aorc\_data}
+released file's claims, swept over six constant precipitation
+thresholds (2.5, 5, 7.62, 10, 15, and 20 mm; 7.62 mm is the released
+default). \texttt{no\_aorc\_data}
 combines \texttt{no\_aorc\_data\_in\_window} with the
 threshold-invariant \texttt{before\_aorc\_coverage}.}
 \label{fig:threshold-sweep}
@@ -892,7 +951,8 @@ threshold-invariant \texttt{before\_aorc\_coverage}.}
 \caption{Distribution of the shift in \texttt{correctedDateOfLoss}
 away from the originally reported \texttt{dateOfLoss} (days, negative
 = earlier) among \texttt{corrected} claims, one row per constant
-precipitation threshold swept (2.5, 5, 10, 15, and 20 mm).}
+precipitation threshold swept (2.5, 5, 7.62, 10, 15, and 20 mm; 7.62
+mm is the released default).}
 \label{fig:day-shift-histogram}
 \end{figure}
 
