@@ -308,9 +308,13 @@ delays or processing errors. Here we present a cleaning pipeline and
 derived dataset that (1) converts all dollar amounts to a constant
 reference year, (2) combines the three location signals into a single
 bounded polygon per claim using a boundary-matching approach validated
-against the data itself, and (3) corrects likely erroneous dates for
-pluvial claims by checking each claim's local rainfall record against
-NOAA's Analysis of Record for Calibration (AORC) precipitation data.
+against the data itself, and (3) replaces likely erroneous dates for
+pluvial claims with the most plausible nearby day of qualifying
+rainfall, identified by checking each claim's local rainfall record
+against NOAA's Analysis of Record for Calibration (AORC) precipitation
+data. No independent ground truth exists for a claim's true
+flood-triggering date, so this adjustment is best understood as a
+plausibility-improving heuristic rather than a verified correction.
 The pipeline is fully scripted and reproducible from public sources,
 with all refinement choices exposed as configurable parameters.
 
@@ -502,9 +506,12 @@ greatest precipitation rather than the day nearest the reported date.
 This follows from a monotonic prior between precipitation intensity
 and pluvial flood risk. Among the days in the window that clear the qualifying
 threshold, the day with the highest precipitation is taken as the most
-probable candidate for the claim's true flood-triggering event,
-independent of which candidate day is closer in time to the reported
-date.
+plausible candidate under this prior, independent of which candidate
+day is closer in time to the reported date. No independent ground
+truth on the claim's true flood-triggering date exists to confirm this
+choice, so this ranking should be read as an assumption the pipeline
+makes explicit, not as a validated identification of the true event
+day.
 %
 The original \texttt{dateOfLoss} is never overwritten. The corrected value and an explicit status code are added as new columns, letting downstream users decide whether to apply
 the correction.
@@ -532,6 +539,16 @@ resolved geographically per claim location, rather than a single
 national reference clock, and daylight-saving transitions are handled.
 % 
 Precipitation at each claim's triangulated polygon centroid is computed by bilinear interpolation of the four surrounding AORC grid pixels.
+%
+This centroid sample is a single point estimate and does not average
+over the polygon's extent, so it may be less representative for the
+largest or most irregularly shaped triangulated polygons (Figure~\ref{fig:polygon-area-histogram}) than for the
+small, near-point polygons most claims resolve to. Because the median
+triangulated polygon (1.17 km$^2$, Figure~\ref{fig:polygon-area-histogram}) is comparable in scale to a single AORC grid
+cell ($\sim$0.8 km $\times$ 0.8 km, $\sim$0.64 km$^2$), centroid sampling
+introduces little additional approximation beyond AORC's native spatial
+resolution for most claims, and the limitation is concentrated in the
+right tail of large or irregularly shaped polygons.
 
 AORC coverage for CONUS begins 1979-02-01. Pluvial claims before this
 date, and claims for which AORC has no data at the triangulated
@@ -546,8 +563,10 @@ set to \texttt{before\_aorc\_coverage} or
 \section*{Data Records}
 
 The dataset is released as a single columnar file
-(\texttt{claims\_pluvial\_corrected.parquet}, Apache Parquet format) at
-claim-level granularity. All original columns from the FEMA OpenFEMA
+(\texttt{claims\_pluvial\_corrected.parquet}, Apache Parquet format,
+Snappy-compressed) at claim-level granularity, comprising 1{,}149{,}288
+rows and 103 columns, one row per released claim, totaling
+approximately 1.7 GB on disk. All original columns from the FEMA OpenFEMA
 \texttt{FimaNfipClaims} extract are preserved unchanged (see FEMA's
 data dictionary for definitions). The columns added by this pipeline
 are as follows.
@@ -584,9 +603,7 @@ are as follows.
     \texttt{unvalidated\_no\_latlon}, \texttt{spatially\_inconsistent},
     \texttt{dropped\_by\_strategy}, or \texttt{no\_vintage\_selected}.
   \item \texttt{zip\_match\_status} --- the same status values as
-    \texttt{block\_group\_match\_status}, plus
-    \texttt{before\_zcta\_coverage} for claims that predate ZCTA
-    coverage under the \texttt{default} strategy.
+    \texttt{block\_group\_match\_status}
 \end{itemize}
 
 \textbf{Added by pluvial date correction.}
@@ -624,7 +641,11 @@ the string-based GEOID match, rather than assuming a code match alone
 means the claim is correctly located. Throughout this subsection, each claim's reported latitude and
 longitude, rounded by FEMA to one decimal degree, is treated as ground
 truth for the claim's true location, giving a $0.1 \times 0.1$ degree
-box the claim must fall within. 
+box the claim must fall within. This treatment assumes the reported
+latitude/longitude is itself an accurate proxy for the claim's true
+location. That assumption is not independently verified here, and if
+the reported coordinates carry their own location error, the checks
+below inherit it rather than detect it.
 
 For a given release, \emph{Match} is the raw rate at which a claim's block-group or ZIP code string matches a GEOID
 in that release's shapefile. \emph{Valid} is computed only over the matched
@@ -634,7 +655,14 @@ spatial-consistency check described in Methods. A high Match rate with
 a low Valid rate would mean the GEOID exists in that release but points
 to the wrong place. A high Valid rate confirms that when a release
 matches at all, it matches to a polygon consistent with the claim's
-own reported coordinates.
+own reported coordinates. Because the claim's rounded latitude/longitude
+is itself one of the three sources intersected into the final
+triangulated polygon (see Methods), Valid measures agreement between
+the block-group or ZIP source and the lat/lon source, not agreement
+against an external ground truth independent of the triangulation
+inputs. A high Valid rate therefore establishes internal consistency
+among the pipeline's own location signals, not the accuracy of any one
+of them against a source outside the pipeline.
 
 \textbf{Block-group boundaries.} Restricted to the released
 (pluvial, \texttt{causeOfDamage == "4"}) claim population, matching
@@ -672,12 +700,18 @@ at processing time is the most direct reading of why block-group match
 rates follow loss year the way they do.
 
 This is exactly the two-release cutover \texttt{default} implements
-for block group, which is why \texttt{default} uses a single cutover
+for block group and why \texttt{default} uses a single cutover
 year (2020) rather than a historical loss-year rule.
 
 Table~\ref{tab:block-group-match-status} gives the full
-\texttt{block\_group\_match\_status} breakdown across the released
-file's full pluvial CONUS population using the \texttt{default} strategy.
+\texttt{block\_group\_match\_status} breakdown across the CONUS-filtered
+pluvial population (1,155,473 claims, Table~\ref{tab:claim-count-funnel}),
+evaluated using the \texttt{default} strategy before the final
+triangulation-overlap drop that produces the 1,149,288-claim released
+file. This population is intentionally broader than the released file,
+so that a source's own match quality is not conflated with whether the
+other two sources happened to combine into a non-empty triangulated
+polygon.
 
 \begin{table}[H]
 \centering
@@ -690,9 +724,11 @@ file's full pluvial CONUS population using the \texttt{default} strategy.
 \texttt{spatially\_inconsistent} (matched code, polygon does not overlap lat/lon box) & 1{,}398 & 0.12\% \\
 \bottomrule
 \end{tabular}
-\caption{\texttt{block\_group\_match\_status} breakdown across the full
-pluvial CONUS population (1,155,473 claims) in the released file. See
-Data Records for status definitions.}
+\caption{\texttt{block\_group\_match\_status} breakdown across the
+CONUS-filtered pluvial population (1,155,473 claims,
+Table~\ref{tab:claim-count-funnel}), evaluated before the final
+triangulation-overlap drop --- this is not the released file's row
+count (1,149,288). See Data Records for status definitions.}
 \label{tab:block-group-match-status}
 \end{table}
 
@@ -722,8 +758,8 @@ between releases seen in the block-group case above.
 This stability is consistent with how \texttt{reportedZipCode} is
 sourced. Unlike \texttt{censusBlockGroupFips} and \texttt{censusTract},
 \texttt{reportedZipCode} is not assigned by FEMA's geocoding service.
-FEMA's own data dictionary describes it as raw data ``as reported by
-WYO partners,'' recorded once at claim intake rather than reassigned by
+FEMA's own data dictionary describes it as raw data \emph{``as reported by
+WYO partners,''} recorded once at claim intake rather than reassigned by
 a lookup that could shift with whichever boundary release happens to
 be current at processing time. With no processing-time geocoding step
 to introduce a release-dependent pattern, there is no equivalent
@@ -737,7 +773,9 @@ crespo_flood_2019} and thus we elect this strategy as the default for ZCTA.
 However, as with \texttt{block\_group\_strategy}, the \texttt{zcta\_strategy} parameter remains configurable.
 
 Table~\ref{tab:zip-match-status} gives the full \texttt{zip\_match\_status}
-breakdown across the released file's full pluvial CONUS population under the \texttt{default} strategy. 
+breakdown across the same CONUS-filtered pluvial population (1,155,473
+claims), evaluated under the \texttt{default} strategy before the same
+final triangulation-overlap drop described above.
 
 \begin{table}[H]
 \centering
@@ -750,11 +788,14 @@ breakdown across the released file's full pluvial CONUS population under the \te
 \texttt{spatially\_inconsistent} (matched code, polygon does not overlap lat/lon box) & 9{,}085 & 0.79\% \\
 \bottomrule
 \end{tabular}
-\caption{\texttt{zip\_match\_status} breakdown across the full pluvial
-CONUS population (1,155,473 claims) in the released file. See Data
-Records for status definitions.}
+\caption{\texttt{zip\_match\_status} breakdown across the CONUS-filtered
+pluvial population (1,155,473 claims, Table~\ref{tab:claim-count-funnel}),
+evaluated before the final triangulation-overlap drop --- this is not
+the released file's row count (1,149,288). See Data Records for status
+definitions.}
 \label{tab:zip-match-status}
 \end{table}
+
 
 \input{tables/boundary_release_block_group.tex}
 
@@ -780,6 +821,24 @@ combine all three sources into the final intersection.
 \caption{Number of contributing location sources per claim's
 triangulated polygon, across the released file's 1,149,288 claims.}
 \label{tab:n-geometry-sources}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrr}
+\toprule
+\texttt{geometry\_sources} & $n$ claims & \% \\
+\midrule
+\texttt{block\_group+zip+latlon} & 1{,}084{,}753 & 94.38\% \\
+\texttt{zip+latlon} & 39{,}224 & 3.41\% \\
+\texttt{block\_group+latlon} & 25{,}010 & 2.18\% \\
+\texttt{latlon} & 301 & 0.03\% \\
+\bottomrule
+\end{tabular}
+\caption{Number of claims by the specific combination of contributing
+location sources, across the released file's 1,149,288 claims. The
+lat/lon box contributes to every claim, so no combination omits it.}
+\label{tab:geometry-sources-breakdown}
 \end{table}
 
 Figure~\ref{fig:polygon-area-histogram} (top) and
@@ -843,14 +902,14 @@ therefore still be \texttt{corrected} or
 \texttt{no\_qualifying\_precip\_in\_window} even when AORC is missing
 data on the reported date itself, so long as some other day in the
 window has data, leaving \texttt{reportedDateMaxPrecipMm} undefined
-for 111,866 of the released file's 1,149,288 claims. Of these, 12,425
-are \texttt{before\_aorc\_coverage} (never evaluated) and 12,201 are
+for 24,830 of the released file's 1,149,288 claims. Of these, 12,425
+are \texttt{before\_aorc\_coverage} (never evaluated) and 12,204 are
 \texttt{no\_aorc\_data\_in\_window} (no day in the window has data, the
-reported date included), while the remaining 87,240 are
+reported date included), while the remaining 201 are
 \texttt{corrected} or \texttt{no\_qualifying\_precip\_in\_window}
 claims resolved from a different day in the window than the one
-missing data. Of the 1,037,422 claims with a defined
-\texttt{reportedDateMaxPrecipMm}, 275,139 (26.5\%) fall at or below
+missing data. Of the 1,124,458 claims with a defined
+\texttt{reportedDateMaxPrecipMm}, 362,174 (32.21\%) fall at or below
 the 7.62 mm default threshold, the population eligible to have their
 date corrected under the default constant threshold.
 
@@ -906,9 +965,9 @@ the table.
 \midrule
 \texttt{accepted\_as\_reported} & 762{,}284 & 66.33\% & Reported date already coincided with meaningful precipitation \\
 \texttt{corrected} & 210{,}488 & 18.31\% & A qualifying day was found within the search window \\
-\texttt{no\_qualifying\_precip\_in\_window} & 151{,}890 & 13.22\% & AORC data was available, but no day in the window cleared the threshold \\
+\texttt{no\_qualifying\_precip\_in\_window} & 151{,}887 & 13.22\% & AORC data was available, but no day in the window cleared the threshold \\
 \texttt{before\_aorc\_coverage} & 12{,}425 & 1.08\% & \texttt{dateOfLoss} predates AORC's 1979-02-01 start, never evaluated \\
-\texttt{no\_aorc\_data\_in\_window} & 12{,}201 & 1.06\% & Evaluated, but every hour of every day in the search window was missing from AORC \\
+\texttt{no\_aorc\_data\_in\_window} & 12{,}204 & 1.06\% & Evaluated, but every hour of every day in the search window was missing from AORC \\
 \bottomrule
 \end{tabular}
 \caption{\texttt{pluvialCorrectionStatus} breakdown across the full
@@ -925,7 +984,7 @@ described in Data Records.}
 \centering
 \includegraphics[width=0.75\textwidth]{figures/precip_histogram.png}
 \caption{Distribution of \texttt{reportedDateMaxPrecipMm} across the
-1,037,422 pluvial claims with a defined \texttt{reportedDateMaxPrecipMm}.}
+1,124,458 pluvial claims with a defined \texttt{reportedDateMaxPrecipMm}.}
 \label{fig:precip-histogram}
 \end{figure}
 
@@ -957,6 +1016,37 @@ mm is the released default).}
 \end{figure}
 
 \input{tables/day_shift_histogram.tex}
+
+\subsection*{Scope of validation}
+
+
+This dataset's claim population follows FEMA's own
+\texttt{causeOfDamage} coding, which this pipeline takes as given
+rather than re-deriving. Prior work has found NFIP's reported
+cause-of-loss information to be incomplete or inconsistent in
+places~\cite{shin_systematic_2022}; because this pipeline builds
+directly on the \texttt{causeOfDamage} field, it inherits that
+limitation. The spatial and temporal refinements validated above apply to whichever claims FEMA has coded
+as pluvial at the time of the source extract.
+
+Similarly, the boundary-release validation above takes each claim's
+reported latitude/longitude as accurate and checks the other two
+location sources against it. It does not, and cannot from this data
+alone, establish that the reported latitude/longitude itself is
+accurate. Any location error already present in FEMA's reported
+coordinates is a limitation this pipeline.
+
+The pluvial date correction has the same character. No independent
+record of a claim's true flood-triggering date exists against which
+\texttt{correctedDateOfLoss} could be checked. The threshold sweep and
+day-shift analysis above (Figures~\ref{fig:threshold-sweep}
+and~\ref{fig:day-shift-histogram}) characterize how the correction
+behaves as its parameters change, not whether the resulting dates are
+closer to the truth than the originally reported ones. The correction
+is therefore best understood as making each claim's reported date more
+plausible under an explicit, stated prior (higher local rainfall
+intensity is taken as more consistent with a pluvial flood), not as a
+verified and absolute error correction.
 
 \section*{Usage Notes}
 
@@ -1005,11 +1095,11 @@ Census block-group and ZCTA shapefiles must be downloaded separately
 and pointed to via \texttt{config.yaml}, while the FEMA, FRED, and
 AORC inputs are fetched automatically.
 
-
 \section*{Data Availability}
 
 The derived dataset described in this paper is released under a CC-BY
-4.0 license. The three upstream sources it is
+4.0 license and is deposited on Zenodo at
+\url{https://doi.org/10.5281/zenodo.22019526}. The three upstream sources it is
 built from are also public, namely FEMA's OpenFEMA FIMA NFIP Redacted Claims v2
 (\url{https://www.fema.gov/openfema-data-page/fima-nfip-redacted-claims-v2}),
 U.S. Census Bureau cartographic boundary files
@@ -1019,17 +1109,12 @@ no-sign-request). None impose redistribution restrictions beyond those
 already stated.
 
 \section*{Code Availability}
-\note{Repo location TBD}
+
+The pipeline used to construct the derived dataset is publicly available
+on GitHub at \url{https://github.com/yuya737/nfip-pluvial-claims-refinement},
+released under the MIT license.
 
 \bibliographystyle{plainnat}
 \bibliography{manuscript}
-
-\section*{Author Contributions}
-
-\section*{Competing Interests}
-
-\section*{Acknowledgements}
-\section*{Funding}
-
 
 \end{document}
