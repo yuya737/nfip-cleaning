@@ -25,7 +25,12 @@ block_group_vintages:
   2020: { glob: "cb_2020_*_bg_500k.zip" }
 
 zcta_vintages:
-  2000: { glob: "zt*_d00_shp.zip", field: "ZCTA" }
+  # Full TIGER/Line resolution, not PREVGENZ's 500k-scale generalization --
+  # same 2000-census ZCTA delineation (ZCTA5CE00 field), but PREVGENZ's
+  # aggressive simplification (median 58 vertices/ZCTA vs. this file's
+  # 1,198) was costing ~12.6pts of spatial-validation rate for no reason
+  # tied to the actual ZIP boundaries.
+  2000: { file: "tl_2009_us_zcta500.zip", field: "ZCTA5CE00" }
   2010: { file: "cb_2019_us_zcta510_500k.zip", field: "ZCTA5CE10" }
   2020: { file: "cb_2020_us_zcta520_500k.zip", field: "ZCTA5CE20" }
 
@@ -44,8 +49,9 @@ matching_strategy_defaults:
 pluvial_correction:
   search_window_days: 7        # +/- days searched around the reported date
   # Default (uniform/constant) precip threshold — see precip_threshold.py.
+  # 7.62 mm/hr = NOAA/NWS "Heavy Rain" (0.30 in/hr, exact: 0.30 * 25.4).
   # correct_pluvial_dates.py --threshold-netcdf <path> uses a spatially-
   # varying grid from a NetCDF file instead, for a single run, without
   # touching this value.
-  min_hourly_precip_mm: 5.0
+  min_hourly_precip_mm: 7.62
   aorc_coverage_start: "1979-01-01"   # AORC v1.1 CONUS coverage begins 1979-01-01
