@@ -23,7 +23,7 @@ that produces them — see `docs/methods.md` for what each step does.
 | Column | Type | Description |
 |---|---|---|
 | `geometry` | polygon (EPSG:5070) | Intersection of whichever of {block-group boundary, ZCTA boundary, lat/lon box} were available *and spatially validated* for the claim (see `docs/methods.md`) — a strict upper bound on the claim's true location. |
-| `n_geometry_sources` | int | How many of the three sources contributed (0-3). Claims with 0, or whose sources intersect to an empty polygon, are dropped before this file is written. |
+| `n_geometry_sources` | int | How many of the three sources contributed (1-3) in this file. Claims with 0 contributing sources, or whose sources intersect to an empty polygon, are dropped before this file is written. |
 | `geometry_sources` | string | Which sources contributed, e.g. `"block_group+zip+latlon"`, `"block_group+latlon"`. |
 | `block_group_vintage_used` | int or null | Which vintage year (e.g. `1990`, `2000`, `2010`, `2020`) `--block-group-strategy` selected for this claim — a lookup key into `config.yaml`'s `block_group_vintages`. Null when the strategy is `drop`, or when no vintage was selected for another reason. Independent of `zip_vintage_used`: the two strategies (and therefore the two vintages chosen) don't have to agree, even both left at `default` — see `docs/methods.md`. |
 | `zip_vintage_used` | int or null | Same, for `--zcta-strategy` and `config.yaml`'s `zcta_vintages`. |
@@ -39,6 +39,7 @@ for why that code is used and its limits as a pluvial-claim filter.
 |---|---|---|
 | `correctedDateOfLoss` | date | Reported `dateOfLoss` if it already coincided with meaningful precipitation, the wettest nearby day if a correction was made, otherwise unchanged from `dateOfLoss`. Always populated (equals `dateOfLoss` when not corrected or not evaluated). |
 | `pluvialCorrectionStatus` | string | One of: `not_pluvial`, `before_aorc_coverage`, `outside_aorc_grid_extent`, `accepted_as_reported`, `corrected`, `no_qualifying_precip_in_window`, `no_aorc_data_in_window`. |
+| `reportedDateMaxPrecipMm` | float | Max hourly precipitation (mm) found at the claim's location on the originally reported `dateOfLoss`, before any correction — the value checked against the threshold to decide whether correction is attempted at all. |
 | `pluvialCorrectionMaxPrecipMm` | float | Max daily precipitation (mm) found at the claim's location on the date `correctedDateOfLoss` refers to. `NaN` when no AORC data was available in the search window. |
 
 ## Coordinate reference systems
