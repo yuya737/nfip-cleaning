@@ -419,6 +419,13 @@ def main():
     pct_reduction = 1 - claims_gdf.geometry.area / claims_gdf["latlon_box_area_m2"]
     print(f"Mean/median area reduction vs. the 0.1-degree box: {pct_reduction.mean():.1%} / {pct_reduction.median():.1%}")
 
+    # Every surviving row has geometry_is_empty == False by construction (has_geometry
+    # excludes True/NaN already), so it's constant and carries no information here --
+    # useful during the pipeline run for the diagnostic count above, not in the output.
+    # latlon_box_area_m2 likewise only exists to feed the area-reduction print above --
+    # drop both rather than ship run-time diagnostics as output columns.
+    claims_gdf = claims_gdf.drop(columns=["geometry_is_empty", "latlon_box_area_m2"])
+
     claims_gdf.to_parquet(args.output)
     print(f"\nWrote {len(claims_gdf):,} rows to {args.output}")
 
