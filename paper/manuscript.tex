@@ -312,7 +312,7 @@ against the data itself, and (3) replaces likely erroneous dates for
 pluvial claims with the most plausible nearby day of qualifying
 rainfall, identified by checking each claim's local rainfall record
 against NOAA's Analysis of Record for Calibration (AORC) precipitation
-data. No independent ground truth exists for a claim's true
+data. No public independent ground truth exists for a claim's true
 flood-triggering date, so this adjustment is best understood as a
 plausibility-improving heuristic rather than a verified correction.
 The pipeline is fully scripted and reproducible from public sources,
@@ -823,6 +823,13 @@ triangulated polygon, across the released file's 1,149,288 claims.}
 \label{tab:n-geometry-sources}
 \end{table}
 
+Table~\ref{tab:geometry-sources-breakdown} breaks the two-source claims
+down further by which specific pair contributed. \texttt{zip+latlon}
+(39{,}224, 3.41\%) outnumbers \texttt{block\_group+latlon} (25{,}010,
+2.18\%), consistent with block group's lower match rate relative to
+ZIP over this population (Tables~\ref{tab:block-group-match-status}
+and~\ref{tab:zip-match-status}).
+
 \begin{table}[H]
 \centering
 \begin{tabular}{lrr}
@@ -1034,7 +1041,7 @@ reported latitude/longitude as accurate and checks the other two
 location sources against it. It does not, and cannot from this data
 alone, establish that the reported latitude/longitude itself is
 accurate. Any location error already present in FEMA's reported
-coordinates is a limitation this pipeline.
+coordinates is a limitation this pipeline inherits rather than detects.
 
 The pluvial date correction has the same character. No independent
 record of a claim's true flood-triggering date exists against which
@@ -1047,6 +1054,7 @@ is therefore best understood as making each claim's reported date more
 plausible under an explicit, stated prior (higher local rainfall
 intensity is taken as more consistent with a pluvial flood), not as a
 verified and absolute error correction.
+
 
 \section*{Usage Notes}
 
