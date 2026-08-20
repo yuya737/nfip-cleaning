@@ -120,7 +120,6 @@ def main():
     cause_of_damage = args.cause_of_damage or None
 
     dropped, kept = build_dropped_kept(cause_of_damage)
-    breakpoint()
     gdf, dropped_counts, kept_counts, d_counts_full, k_counts_full, lat_bins, lon_bins = bin_to_grid(dropped, kept)
     dropped_pct = dropped_counts / dropped_counts.sum() * 100
     kept_pct = kept_counts / kept_counts.sum() * 100

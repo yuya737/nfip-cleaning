@@ -221,10 +221,10 @@ Match rate is one thing; spatial-*validation* rate (of the claims whose
 code matches a vintage's GEOID list, what fraction of those matches also
 overlap the claim's lat/lon box) is another, and there the 2000 ZCTA
 vintage was a real outlier: 86.5% mean validated rate vs. ~99.1% for both
-2010 and 2020 (a ~12.6pt gap), which propagates directly into
-`geometry_is_empty` drops for pre-2005 claims (`closest`, the shipped ZIP
-strategy, picks the 2000 vintage for every claim before 2005 — see
-`vintage_for_strategy`). Two candidate explanations were tested against
+2010 and 2020 (a ~12.6pt gap), which propagates directly into claims
+dropped for an empty final intersection (see below) for pre-2005 claims
+(`closest`, the shipped ZIP strategy, picks the 2000 vintage for every
+claim before 2005 — see `vintage_for_strategy`). Two candidate explanations were tested against
 each other rather than assumed: (1) the 2000 vintage's *boundaries*
 genuinely differ from 2010's (real ZCTA redefinition between census
 decades — ZCTAs are redrawn each census from population-weighted ZIP-code
@@ -250,8 +250,11 @@ against the lat/lon box while failing to overlap one another — for
 example, a block group and a ZCTA that are each individually plausible
 given the rounded coordinates but that do not share any area. This is a
 distinct failure mode from the vintage-mismatch problem described above.
-`geometry_is_empty` flags this case explicitly rather than allowing a
-zero-area polygon to be published silently.
+`triangulate_claims.py` checks for this explicitly (an empty final
+intersection despite a non-empty source list) and excludes the claim
+rather than publishing a zero-area polygon; the run's printed diagnostic
+count is the only trace of it; it isn't a column in the output, since
+every surviving row is non-empty by construction.
 
 ## Step 3: Pluvial date correction (`build_aorc_pixel_day_index.py` / `fetch_aorc_daily_max.py` / `correct_pluvial_dates.py`)
 
@@ -265,7 +268,8 @@ resolved by it.
 
 For each claim coded `"4"`, the reported `dateOfLoss` is checked against
 whether it coincides with a day of meaningful precipitation (maximum
-hourly APCP exceeding a threshold, default 5.0 mm) at the claim's
+hourly APCP exceeding a threshold, default 7.62 mm/hr — NOAA/NWS's
+"Heavy Rain" bar, 0.30 in/hr) at the claim's
 triangulated location, using NOAA's public AORC v1.1 archive
 (30 arc-second / ~800 m grid, hourly, CONUS, 1979-present). If it does not, a
 `search_window_days` window (default +/- 7 days) is searched for the
